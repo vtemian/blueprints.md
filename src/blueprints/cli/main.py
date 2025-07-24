@@ -123,7 +123,7 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
 
 
 @main.command()
-@click.argument("blueprint_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--language",
     "-l",
@@ -142,9 +142,18 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
     help="Overwrite existing files without confirmation",
 )
 @click.pass_context
-def generate_project(ctx: click.Context, blueprint_file: Path, language: str, api_key: Optional[str], force: bool) -> None:
+def generate_project(ctx: click.Context, path: Path, language: str, api_key: Optional[str], force: bool) -> None:
     """Generate entire project from a blueprint with dependencies (files generated alongside blueprints)."""
     verbose = ctx.obj.get("verbose", False)
+
+    # Determine blueprint file - if path is a directory, look for main.md
+    if path.is_dir():
+        blueprint_file = path / "main.md"
+        if not blueprint_file.exists():
+            click.echo(f"❌ Error: main.md not found in directory {path}", err=True)
+            ctx.exit(1)
+    else:
+        blueprint_file = path
 
     if verbose:
         click.echo(f"Generating project from blueprint: {blueprint_file}")
