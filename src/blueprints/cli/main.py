@@ -20,19 +20,6 @@ def main(ctx: click.Context, verbose: bool) -> None:
     ctx.obj["verbose"] = verbose
 
 
-@main.command()
-@click.argument("blueprint_file", type=click.Path(exists=True, path_type=Path))
-@click.pass_context
-def validate(ctx: click.Context, blueprint_file: Path) -> None:
-    """Validate a blueprint file."""
-    verbose = ctx.obj.get("verbose", False)
-
-    if verbose:
-        click.echo(f"Validating blueprint file: {blueprint_file}")
-
-    # TODO: Implement blueprint validation
-    click.echo(f"✓ Blueprint file '{blueprint_file}' is valid")
-
 
 @main.command()
 @click.argument("blueprint_file", type=click.Path(exists=True, path_type=Path))
