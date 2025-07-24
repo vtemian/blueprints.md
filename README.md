@@ -1,26 +1,6 @@
 # blueprints.md
 
-A markdown-to-code generation system that transforms concise blueprint specifications into production-ready source code using Claude AI.
-
-## What is blueprints.md?
-
 blueprints.md allows developers to write concise markdown "blueprints" that describe their code architecture, then automatically generate the complete implementation using Claude AI. Instead of writing boilerplate code, you focus on design and let AI handle the implementation details.
-
-**Key Benefits:**
-- **75% reduction in specification size** compared to traditional documentation
-- **Automatic dependency inference** - no need to specify standard library or third-party imports
-- **Modular architecture** - blueprints reference each other for complex systems
-- **Multiple language support** - Python, JavaScript, TypeScript, Java, Go, Rust, and more
-- **Production-ready output** - includes error handling, type hints, and documentation
-- **Project scaffolding** - generates complete projects with Makefiles and setup instructions
-
-**Perfect for:**
-- API development (FastAPI, Express, Spring Boot)
-- Database models and schemas
-- CLI tools and applications  
-- Microservices architecture
-- Prototyping and MVPs
-- Code documentation and specification
 
 ## Quick Start
 
