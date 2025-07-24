@@ -1,7 +1,7 @@
 # main
 FastAPI application entrypoint for task management API
 
-deps: fastapi[FastAPI]; uvicorn; @.api.tasks[router as tasks_router]; @.api.users[router as users_router]; @.core.database[init_db]
+deps: @.api.tasks[router as tasks_router]; @.api.users[router as users_router]; @.core.database[init_db]
 
 app = FastAPI(
     title="Task Management API",

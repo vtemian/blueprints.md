@@ -1,7 +1,7 @@
 # api.tasks
 Task management API endpoints
 
-deps: fastapi[APIRouter, HTTPException, Depends, status]; sqlalchemy.orm[Session]; typing[List]; @..core.database[get_db]; @..models.task[Task]; @..models.user[User]
+deps: @..core.database[get_db]; @..models.task[Task]; @..models.user[User]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 

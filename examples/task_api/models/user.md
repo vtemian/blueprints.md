@@ -1,8 +1,6 @@
 # models.user
 User data model for authentication and task ownership
 
-deps: sqlalchemy[Column, Integer, String, Boolean, DateTime]; sqlalchemy.orm[relationship]; datetime; typing[List]
-
 User:
   __tablename__ = "users"
   

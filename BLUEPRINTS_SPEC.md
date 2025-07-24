@@ -8,7 +8,7 @@ A concise format for blueprints that reduces context size by ~75% while maintain
 # module.name
 One-line description
 
-deps: package[item1, item2]; package2; ./local.module
+deps: @.other.blueprint[Component]
 
 ClassName:
   - method(param: type) -> return_type  # comment
@@ -20,6 +20,8 @@ function_name(param: type = default) -> return_type:
 notes: implementation detail 1, performance note, future enhancement
 ```
 
+**Key Feature**: Standard library and third-party imports are automatically inferred. Only specify blueprint references with `@` prefix.
+
 ## Syntax Rules
 
 ### 1. Module Declaration
@@ -28,10 +30,12 @@ notes: implementation detail 1, performance note, future enhancement
 One-line description
 ```
 
-### 2. Dependencies
+### 2. Dependencies (Optional)
 ```markdown
-deps: package[item1, item2]; package2; @.local.blueprint; @..sibling.blueprint
+deps: @.local.blueprint; @..sibling.blueprint[Class1, Function2]
 ```
+
+Only blueprint references need to be specified. Standard library and third-party imports are automatically inferred by Claude during generation.
 
 Blueprint references use `@` prefix:
 - `@.module` - Blueprint in same directory

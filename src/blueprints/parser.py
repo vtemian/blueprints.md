@@ -41,7 +41,6 @@ class Blueprint:
     """Represents a parsed compact blueprint file."""
     module_name: str
     description: str = ""
-    dependencies: Dict[str, List[str]] = field(default_factory=dict)  # package -> [items]
     blueprint_refs: List[BlueprintReference] = field(default_factory=list)  # references to other blueprints
     components: List[Component] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
@@ -82,10 +81,9 @@ class CompactBlueprintParser:
             line = lines[i].strip()
             
             if line.startswith('deps:'):
-                # Parse dependencies and blueprint references
+                # Parse only blueprint references (ignore standard/3rd party deps)
                 deps_str = line[5:].strip()
-                deps, refs = self._parse_dependencies_and_refs(deps_str)
-                blueprint.dependencies = deps
+                refs = self._parse_blueprint_refs(deps_str)
                 blueprint.blueprint_refs = refs
                 
             elif line.startswith('notes:'):
@@ -105,42 +103,34 @@ class CompactBlueprintParser:
         
         return blueprint
     
-    def _parse_dependencies_and_refs(self, deps_str: str) -> Tuple[Dict[str, List[str]], List[BlueprintReference]]:
-        """Parse compact dependency string, separating packages from blueprint references."""
-        dependencies = {}
+    def _parse_blueprint_refs(self, deps_str: str) -> List[BlueprintReference]:
+        """Parse only blueprint references from dependency string."""
         blueprint_refs = []
         
-        # Split by semicolon for different packages
+        # Split by semicolon for different dependencies
         for dep in deps_str.split(';'):
             dep = dep.strip()
             if not dep:
                 continue
             
-            # Check if it's a relative import (blueprint reference)
-            is_blueprint_ref = dep.startswith('.') or dep.startswith('@')
-            
-            # Check if it has items in brackets
-            if '[' in dep and ']' in dep:
-                package = dep[:dep.index('[')].strip()
-                items_str = dep[dep.index('[')+1:dep.index(']')]
-                items = [item.strip() for item in items_str.split(',')]
-                
-                if is_blueprint_ref:
+            # Only process blueprint references (starting with @ or .)
+            if dep.startswith('.') or dep.startswith('@'):
+                # Check if it has items in brackets
+                if '[' in dep and ']' in dep:
+                    package = dep[:dep.index('[')].strip()
+                    items_str = dep[dep.index('[')+1:dep.index(']')]
+                    items = [item.strip() for item in items_str.split(',')]
+                    
                     # Remove @ prefix if present
                     if package.startswith('@'):
                         package = package[1:]
                     blueprint_refs.append(BlueprintReference(module_path=package, items=items))
                 else:
-                    dependencies[package] = items
-            else:
-                # Just a package/module name
-                if is_blueprint_ref:
+                    # Just a blueprint module name
                     module = dep[1:] if dep.startswith('@') else dep
                     blueprint_refs.append(BlueprintReference(module_path=module))
-                else:
-                    dependencies[dep] = []
         
-        return dependencies, blueprint_refs
+        return blueprint_refs
     
     def _parse_component(self, lines: List[str], start_idx: int) -> Optional[Component]:
         """Parse a component starting at the given line."""

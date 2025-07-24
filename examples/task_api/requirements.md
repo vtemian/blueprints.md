@@ -1,8 +1,6 @@
 # requirements
 Python dependencies for the task management API
 
-deps: # No dependencies needed for this file
-
 # FastAPI and ASGI server
 fastapi_requirement: str = "fastapi>=0.104.0"
 uvicorn_requirement: str = "uvicorn[standard]>=0.24.0"

@@ -232,8 +232,6 @@ def init(ctx: click.Context, module_name: str, output: Optional[Path]) -> None:
     template = f"""# {module_name}
 Brief description of what this module does
 
-deps: package1[dependency1]; package2[dependency2]
-
 ExampleClass:
   - __init__(param: str)
   - method_name(param: str) -> str  # Description

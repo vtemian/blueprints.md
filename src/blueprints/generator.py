@@ -266,20 +266,6 @@ class CodeGenerator:
             ""
         ])
         
-        # Format dependencies (external packages only, not blueprint refs)
-        if blueprint.dependencies:
-            deps_parts = []
-            for package, items in blueprint.dependencies.items():
-                if items:
-                    deps_parts.append(f"{package}: {', '.join(items)}")
-                else:
-                    deps_parts.append(package)
-            prompt_parts.extend([
-                "External dependencies:",
-                *[f"- {dep}" for dep in deps_parts],
-                ""
-            ])
-        
         # Format components
         if blueprint.components:
             prompt_parts.append("Components to implement:")
@@ -297,11 +283,17 @@ class CodeGenerator:
         prompt_parts.extend([
             "",
             f"Generate complete {language} code with:",
-            "1. All necessary imports based on the dependencies",
-            "2. Full implementation of all components",
+            "1. Automatically infer and add all necessary imports (standard library, third-party, and local)",
+            "2. Full implementation of all components", 
             "3. Type hints and concise docstrings",
-            "4. Error handling where appropriate", 
+            "4. Error handling where appropriate",
             "5. Follow the implementation notes",
+            "",
+            "Import Requirements:",
+            "- Import only what you actually use in the code",
+            "- Use standard library imports when possible", 
+            "- Infer third-party packages from the component descriptions and functionality",
+            "- Group imports: standard library, third-party, then local imports",
             "",
             "Return ONLY the code without explanations or tests."
         ])

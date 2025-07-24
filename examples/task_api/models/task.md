@@ -1,7 +1,7 @@
 # models.task
 Task data model for the task management system
 
-deps: sqlalchemy[Column, Integer, String, Boolean, DateTime, ForeignKey]; sqlalchemy.orm[relationship]; datetime; typing[Optional]; @.user[User]
+deps: @.user[User]
 
 Task:
   __tablename__ = "tasks"

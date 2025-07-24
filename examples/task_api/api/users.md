@@ -1,7 +1,7 @@
 # api.users
 User management API endpoints
 
-deps: fastapi[APIRouter, HTTPException, Depends, status]; sqlalchemy.orm[Session]; typing[List]; @..core.database[get_db]; @..models.user[User]
+deps: @..core.database[get_db]; @..models.user[User]
 
 router = APIRouter(prefix="/users", tags=["users"])
 

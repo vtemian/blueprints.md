@@ -92,7 +92,7 @@ See `BLUEPRINTS_SPEC.md` for the complete specification. The compact format redu
 # module.name
 Brief description of what this module does
 
-deps: package1[item1, item2]; package2; @.other.blueprint[Component]; typing[Optional]
+deps: @.other.blueprint[Component]
 
 MyClass:
   - method_name(param: type) -> return_type  # comment
@@ -107,7 +107,7 @@ CONSTANT_NAME: type = value
 notes: implementation detail 1, performance note, future enhancement
 ```
 
-Blueprint references use `@` prefix to import from other blueprints in your project.
+**Key Feature**: Only blueprint references (with `@` prefix) need to be specified. Standard library imports (`typing`, `datetime`, `os`) and third-party packages (`fastapi`, `sqlalchemy`) are automatically inferred and imported by Claude during generation.
 
 ## Example: Task Management API
 
