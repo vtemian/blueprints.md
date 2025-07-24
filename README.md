@@ -4,7 +4,7 @@ A markdown-to-code generation system that transforms concise blueprint specifica
 
 ## What is blueprints.md?
 
-blueprints.md revolutionizes software development by allowing developers to write concise markdown "blueprints" that describe their code architecture, then automatically generate the complete implementation using Claude AI. Instead of writing boilerplate code, you focus on design and let AI handle the implementation details.
+blueprints.md allows developers to write concise markdown "blueprints" that describe their code architecture, then automatically generate the complete implementation using Claude AI. Instead of writing boilerplate code, you focus on design and let AI handle the implementation details.
 
 **Key Benefits:**
 - **75% reduction in specification size** compared to traditional documentation
