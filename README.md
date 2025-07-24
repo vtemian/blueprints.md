@@ -1,6 +1,26 @@
 # blueprints.md
 
-A markdown-to-code generation system that uses Claude API to generate source code from blueprint specifications.
+A markdown-to-code generation system that transforms concise blueprint specifications into production-ready source code using Claude AI.
+
+## What is blueprints.md?
+
+blueprints.md revolutionizes software development by allowing developers to write concise markdown "blueprints" that describe their code architecture, then automatically generate the complete implementation using Claude AI. Instead of writing boilerplate code, you focus on design and let AI handle the implementation details.
+
+**Key Benefits:**
+- **75% reduction in specification size** compared to traditional documentation
+- **Automatic dependency inference** - no need to specify standard library or third-party imports
+- **Modular architecture** - blueprints reference each other for complex systems
+- **Multiple language support** - Python, JavaScript, TypeScript, Java, Go, Rust, and more
+- **Production-ready output** - includes error handling, type hints, and documentation
+- **Project scaffolding** - generates complete projects with Makefiles and setup instructions
+
+**Perfect for:**
+- API development (FastAPI, Express, Spring Boot)
+- Database models and schemas
+- CLI tools and applications  
+- Microservices architecture
+- Prototyping and MVPs
+- Code documentation and specification
 
 ## Quick Start
 
@@ -21,8 +41,8 @@ A markdown-to-code generation system that uses Claude API to generate source cod
    # Single file (with dependency context)
    blueprints generate examples/task_api/api/tasks.md
    
-   # Entire project (separate API calls)
-   blueprints generate-project examples/task_api/main.md
+   # Entire project with Makefile (auto-detects main.md)
+   blueprints generate-project examples/task_api/
    ```
 
 ## Installation
@@ -63,12 +83,15 @@ blueprints generate blueprint.md -v
 ### Generate entire project
 
 ```bash
-# Generate entire project with dependencies (separate API calls)
-# Files are generated alongside blueprint files
+# Generate entire project with dependencies and Makefile
+# Auto-detects main.md in directory
+blueprints generate-project examples/task_api/
+
+# Or specify main.md directly
 blueprints generate-project examples/task_api/main.md
 
 # Verbose output shows generation order
-blueprints generate-project examples/task_api/main.md -v
+blueprints generate-project examples/task_api/ -v
 ```
 
 ### Other commands
@@ -76,9 +99,6 @@ blueprints generate-project examples/task_api/main.md -v
 ```bash
 # Initialize a new blueprint
 blueprints init my_module
-
-# Validate a blueprint
-blueprints validate my_module.md
 
 # Discover blueprints in a directory
 blueprints discover src/
@@ -109,13 +129,23 @@ notes: implementation detail 1, performance note, future enhancement
 
 **Key Feature**: Only blueprint references (with `@` prefix) need to be specified. Standard library imports (`typing`, `datetime`, `os`) and third-party packages (`fastapi`, `sqlalchemy`) are automatically inferred and imported by Claude during generation.
 
+## How It Works
+
+1. **Write Blueprints** - Create concise `.md` files describing your code structure
+2. **Define Dependencies** - Reference other blueprints with `@` syntax for modular design  
+3. **Generate Code** - Run `blueprints generate-project` to create complete implementations
+4. **Get Production Code** - Receive fully functional code with imports, error handling, and documentation
+
+The system uses Claude AI to understand your blueprint specifications and generate idiomatic code in your target language, automatically inferring dependencies and following best practices.
+
 ## Example: Task Management API
 
 The `examples/task_api/` directory contains a complete FastAPI application:
 
 ```
 task_api/
-├── main.md              # FastAPI app entrypoint
+├── main.md              # Project documentation and setup
+├── app.md               # FastAPI application entrypoint
 ├── models/
 │   ├── user.md          # User model
 │   └── task.md          # Task model  
@@ -126,10 +156,26 @@ task_api/
     └── tasks.md         # Task endpoints
 ```
 
-Generate the entire project:
+Generate the entire project with Makefile:
 ```bash
-blueprints generate-project examples/task_api/main.md -v
+blueprints generate-project examples/task_api/ -v
 ```
+
+This creates all Python files alongside the blueprints plus a Makefile with:
+- `make setup` - Install dependencies
+- `make run` - Start the application  
+- `make dev` - Development server with reload
+- `make test` - Run tests
+
+**What gets generated:**
+- Complete FastAPI application with authentication
+- SQLAlchemy models with relationships
+- API routes with validation and error handling
+- Database setup with async support
+- JWT token authentication
+- Comprehensive error handling
+- Type hints throughout
+- Production-ready structure
 
 ## Command Comparison
 
@@ -139,10 +185,11 @@ blueprints generate-project examples/task_api/main.md -v
 | `generate-project` | All files in dependency order | 1 call per blueprint | Generate entire project efficiently |
 
 ### `generate-project` creates:
-- One API call per blueprint (6 total)
+- One API call per blueprint (7 total for task_api)
 - Dependencies resolved automatically  
 - Files generated alongside blueprint files (.py next to .md)
 - Complete working FastAPI application
+- **Makefile with setup, run, and development commands**
 
 ### `generate` creates:
 - Single file with all blueprint dependencies as context
@@ -158,6 +205,32 @@ Environment variables:
 - `BLUEPRINTS_MAX_TOKENS` - Max tokens for generation (default: 4000)
 - `BLUEPRINTS_TEMPERATURE` - Temperature for generation (default: 0.0)
 
+## Why Choose blueprints.md?
+
+**Traditional Development:**
+```python
+# You write hundreds of lines of boilerplate
+class TaskService:
+    def __init__(self, db: Database):
+        self.db = db
+    
+    async def create_task(self, task_data: TaskCreate, user_id: int):
+        # 50+ lines of implementation...
+```
+
+**blueprints.md Approach:**
+```markdown
+# services.task
+Task management service with CRUD operations
+
+TaskService:
+  - create_task(task_data: TaskCreate, user_id: int) -> Task
+  - get_user_tasks(user_id: int) -> List[Task]
+  - update_task(task_id: int, updates: TaskUpdate) -> Task
+```
+
+**Result:** Complete, production-ready implementation generated automatically with proper error handling, validation, and database operations.
+
 ## Development
 
 ```bash
@@ -170,6 +243,17 @@ uv run black .
 # Type checking
 uv run mypy .
 ```
+
+## Contributing
+
+blueprints.md uses itself for development! The entire codebase is documented with blueprints in `src/blueprints/*.md`. To contribute:
+
+1. Modify the relevant blueprint files
+2. Run `blueprints generate-project src/blueprints/` to regenerate code
+3. Test your changes
+4. Submit a pull request
+
+This ensures all code changes are properly documented and architecture is maintained.
 
 ## Example Output
 
@@ -190,25 +274,29 @@ Generating code from blueprint: examples/task_api/api/tasks.md
 ```
 
 ```bash
-$ blueprints generate-project examples/task_api/main.md -v
+$ blueprints generate-project examples/task_api/ -v
 
 Generating project from blueprint: examples/task_api/main.md
 Files will be generated alongside blueprint files
   Main module: main
-  Total blueprints: 6
+  Total blueprints: 7
   Generation order:
     1. models.user
     2. core.database  
     3. models.task
     4. api.users
     5. api.tasks
-    6. main
+    6. app
+    7. main
 
-✓ Generated 6 files:
+✓ Generated 7 files:
   models.user -> examples/task_api/models/user.py
   core.database -> examples/task_api/core/database.py
   models.task -> examples/task_api/models/task.py
   api.users -> examples/task_api/api/users.py
   api.tasks -> examples/task_api/api/tasks.py
-  main -> examples/task_api/main.py
+  app -> examples/task_api/app.py
+  Makefile -> examples/task_api/Makefile
+  
+✓ Generated Makefile with setup and run commands
 ```
