@@ -363,7 +363,10 @@ class CodeGenerator:
         # Add blueprint dependency import requirements if present
         blueprint_import_requirements = ""
         if blueprint.blueprint_refs:
-            blueprint_import_requirements = self._format_blueprint_import_requirements(blueprint.blueprint_refs)
+            blueprint_import_requirements = self._format_blueprint_import_requirements(blueprint.blueprint_refs, blueprint.module_name)
+        
+        # Extract function signatures from blueprint to help with async/await decisions
+        function_signatures = self._extract_function_signatures(blueprint)
         
         prompt_parts.extend([
             "",
@@ -398,14 +401,67 @@ class CodeGenerator:
             "- Keep functions focused on a single responsibility (max 30 lines)",
             "- Use clear, descriptive variable names",
             "- Avoid high cognitive complexity - max 3 levels of nesting",
+            "",
+            "Async/Await Guidelines:",
+            "- CRITICAL: Only use 'await' with async functions",
+            "- Check function signatures before using await",
+            "- If a function from another module is not async, do NOT await it",
+            "- Common sync functions that should NOT be awaited:",
+            "  * Most initialization functions unless explicitly async",
+            "  * Functions from blueprints without 'async' prefix (e.g., init_db() -> None is SYNC)",
+            "- When in doubt, check the blueprint signature - no 'async' means it's synchronous",
             "- Extract complex logic into well-named helper functions",
+            "",
+            function_signatures,
             "",
             "Return ONLY the code without explanations or tests."
         ])
         
         return "\n".join(prompt_parts)
     
-    def _format_blueprint_import_requirements(self, blueprint_refs: List['BlueprintReference']) -> str:
+    def _extract_function_signatures(self, blueprint: Blueprint) -> str:
+        """Extract function signatures from blueprint to clarify async/sync nature."""
+        if not blueprint.components:
+            return ""
+        
+        signatures = ["Function signatures from blueprint (all are SYNC unless marked otherwise):"]
+        for component in blueprint.components:
+            if component.type == "function":
+                # In blueprints, functions are represented as components with methods
+                # Extract the first method which represents the function itself
+                if component.methods:
+                    method = component.methods[0]
+                    sig = f"- {method.name}("
+                    if method.params:
+                        sig += method.params
+                    sig += ")"
+                    if method.return_type:
+                        sig += f" -> {method.return_type}"
+                    # Check if marked as async
+                    if method.is_async:
+                        sig += " # ASYNC function - use await when calling"
+                    else:
+                        sig += " # SYNC function - do NOT use await when calling"
+                    signatures.append(sig)
+        
+        # Also add info about imported functions from dependencies
+        if blueprint.blueprint_refs:
+            signatures.append("\nImported functions from dependencies:")
+            for ref in blueprint.blueprint_refs:
+                for item in ref.items:
+                    if ' as ' in item:
+                        parts = item.split(' as ')
+                        if len(parts) == 2:
+                            orig_name, alias = parts
+                            signatures.append(f"- {alias.strip()} (from {ref.module_path}) # Check source module to determine if async")
+                        else:
+                            signatures.append(f"- {item.strip()} (from {ref.module_path}) # Check source module to determine if async")
+                    else:
+                        signatures.append(f"- {item.strip()} (from {ref.module_path}) # Check source module to determine if async")
+        
+        return "\n".join(signatures) if len(signatures) > 1 else ""
+    
+    def _format_blueprint_import_requirements(self, blueprint_refs: List['BlueprintReference'], current_module: Optional[str] = None) -> str:
         """Format blueprint dependency requirements for import instructions."""
         if not blueprint_refs:
             return ""
@@ -418,8 +474,15 @@ class CodeGenerator:
                 # Remove double dots for absolute import (from parent directory)
                 module_path = module_path[2:]
             elif module_path.startswith('.'):
-                # Remove leading dot for absolute import
-                module_path = module_path[1:]
+                # Single dot - sibling module in same namespace
+                if current_module and '.' in current_module:
+                    # Get parent namespace and append the sibling module
+                    parent_namespace = '.'.join(current_module.split('.')[:-1])
+                    sibling_module = module_path[1:]  # Remove the dot
+                    module_path = f"{parent_namespace}.{sibling_module}"
+                else:
+                    # Remove leading dot for absolute import (fallback)
+                    module_path = module_path[1:]
             
             for item in ref.items:
                 if ' as ' in item:

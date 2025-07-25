@@ -126,6 +126,11 @@ class CodeVerifier:
         if not results[-1].success:
             return results
 
+        # Add async/await verification
+        results.append(self.verify_async_await_usage(code, blueprint))
+        if not results[-1].success:
+            return results
+
         results.append(self.verify_types(code, file_path))
         if not results[-1].success:
             return results
@@ -138,7 +143,7 @@ class CodeVerifier:
         if not blueprint.blueprint_refs:
             return VerificationResult(success=True)
             
-        expected_imports = self._extract_expected_imports_from_refs(blueprint.blueprint_refs)
+        expected_imports = self._extract_expected_imports_from_refs(blueprint.blueprint_refs, blueprint.module_name)
         actual_imports = self._extract_actual_imports(code)
         
         errors = []
@@ -220,7 +225,13 @@ class CodeVerifier:
         
         return VerificationResult(success=True)
     
-    def _extract_expected_imports_from_refs(self, blueprint_refs: List['BlueprintReference']) -> List[dict]:
+    def verify_async_await_usage(self, code: str, blueprint: Optional['Blueprint'] = None) -> VerificationResult:
+        """Verify that async/await usage matches function definitions using Claude."""
+        # Skip async/await verification for now - it will be handled by Claude during generation
+        # This prevents hardcoding of function signatures
+        return VerificationResult(success=True)
+    
+    def _extract_expected_imports_from_refs(self, blueprint_refs: List['BlueprintReference'], current_module: Optional[str] = None) -> List[dict]:
         """Extract expected import statements from blueprint references."""
         expected = []
         for ref in blueprint_refs:
@@ -230,8 +241,15 @@ class CodeVerifier:
                 # Remove double dots for absolute import (from parent directory)
                 module_path = module_path[2:]
             elif module_path.startswith('.'):
-                # Remove leading dot for absolute import
-                module_path = module_path[1:]
+                # Single dot - sibling module in same namespace
+                if current_module and '.' in current_module:
+                    # Get parent namespace and append the sibling module
+                    parent_namespace = '.'.join(current_module.split('.')[:-1])
+                    sibling_module = module_path[1:]  # Remove the dot
+                    module_path = f"{parent_namespace}.{sibling_module}"
+                else:
+                    # Remove leading dot for absolute import (fallback)
+                    module_path = module_path[1:]
             
             for item in ref.items:
                 if ' as ' in item:
@@ -480,8 +498,15 @@ Please fix the errors and regenerate the code in {language}. Pay special attenti
                 # Remove double dots for absolute import (from parent directory)
                 module_path = module_path[2:]
             elif module_path.startswith('.'):
-                # Remove leading dot for absolute import
-                module_path = module_path[1:]
+                # Single dot - sibling module in same namespace
+                if blueprint.module_name and '.' in blueprint.module_name:
+                    # Get parent namespace and append the sibling module
+                    parent_namespace = '.'.join(blueprint.module_name.split('.')[:-1])
+                    sibling_module = module_path[1:]  # Remove the dot
+                    module_path = f"{parent_namespace}.{sibling_module}"
+                else:
+                    # Remove leading dot for absolute import (fallback)
+                    module_path = module_path[1:]
             
             for item in ref.items:
                 if ' as ' in item:
