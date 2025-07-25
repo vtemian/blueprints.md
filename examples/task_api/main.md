@@ -41,27 +41,6 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-## API Endpoints
-- GET / - Health check
-- GET /health - Detailed health status
-- POST /users/register - User registration
-- POST /users/login - User authentication
-- GET /tasks - List user tasks
-- POST /tasks - Create new task
-- PUT /tasks/{id} - Update task
-- DELETE /tasks/{id} - Delete task
-
-## Project Structure
-- app.py - FastAPI application entrypoint and configuration
-- api/ - API route handlers
-  - tasks.py - Task management endpoints
-  - users.py - User authentication endpoints
-- models/ - Database models
-  - task.py - Task data model
-  - user.py - User data model
-- core/ - Core functionality
-  - database.py - Database connection and setup
-
 ## Architecture Notes
 - Uses JWT tokens for authentication
 - SQLite database with SQLAlchemy ORM

@@ -46,8 +46,13 @@ def main(ctx: click.Context, verbose: bool) -> None:
     is_flag=True,
     help="Overwrite existing files without confirmation",
 )
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    help="Enable/disable code verification (default: enabled)",
+)
 @click.pass_context
-def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], language: str, api_key: Optional[str], force: bool) -> None:
+def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], language: str, api_key: Optional[str], force: bool, verify: bool) -> None:
     """Generate source code from a blueprint file using Claude API."""
     verbose = ctx.obj.get("verbose", False)
 
@@ -90,7 +95,7 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
                 output = blueprint_file.parent / f"{blueprint_file.stem}{ext}"
         
         # Generate single file with full dependency context
-        output_path = generator.generate_single_with_context(resolved, output, language, force)
+        output_path = generator.generate_single_with_context(resolved, output, language, force, verify)
         
         click.echo(f"✓ Generated code saved to: {output_path}")
         
@@ -128,16 +133,49 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
     is_flag=True,
     help="Overwrite existing files without confirmation",
 )
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    help="Enable/disable code verification (default: enabled)",
+)
 @click.pass_context
-def generate_project(ctx: click.Context, path: Path, language: str, api_key: Optional[str], force: bool) -> None:
+def generate_project(ctx: click.Context, path: Path, language: str, api_key: Optional[str], force: bool, verify: bool) -> None:
     """Generate entire project from a blueprint with dependencies (files generated alongside blueprints)."""
     verbose = ctx.obj.get("verbose", False)
 
-    # Determine blueprint file - if path is a directory, look for main.md
+    # Determine blueprint file - if path is a directory, look for entrypoint
     if path.is_dir():
-        blueprint_file = path / "main.md"
-        if not blueprint_file.exists():
-            click.echo(f"❌ Error: main.md not found in directory {path}", err=True)
+        # First try main.md
+        main_md = path / "main.md"
+        app_md = path / "app.md"
+        
+        blueprint_file = None
+        
+        if main_md.exists():
+            # Check if main.md has blueprint dependencies
+            try:
+                from ..parser import BlueprintParser
+                parser = BlueprintParser()
+                main_blueprint = parser.parse_file(main_md)
+                if main_blueprint.blueprint_refs:
+                    # main.md has dependencies, use it
+                    blueprint_file = main_md
+                elif app_md.exists():
+                    # main.md has no deps, try app.md
+                    app_blueprint = parser.parse_file(app_md)
+                    if app_blueprint.blueprint_refs:
+                        blueprint_file = app_md
+                    else:
+                        blueprint_file = main_md  # fallback to main.md
+                else:
+                    blueprint_file = main_md  # fallback to main.md
+            except Exception:
+                # If parsing fails, fallback to main.md
+                blueprint_file = main_md
+        elif app_md.exists():
+            blueprint_file = app_md
+        else:
+            click.echo(f"❌ Error: Neither main.md nor app.md found in directory {path}", err=True)
             ctx.exit(1)
     else:
         blueprint_file = path
@@ -160,7 +198,15 @@ def generate_project(ctx: click.Context, path: Path, language: str, api_key: Opt
         
         # Generate code using Claude API with separate calls
         generator = CodeGenerator(api_key=api_key)
-        generated_files = generator.generate_project(resolved, Path("."), language, force)
+        
+        # Pass main.md path for Makefile generation if different from blueprint_file
+        main_md_path = None
+        if path.is_dir():
+            potential_main = path / "main.md"
+            if potential_main.exists() and potential_main != blueprint_file:
+                main_md_path = potential_main
+        
+        generated_files = generator.generate_project(resolved, Path("."), language, force, main_md_path, verify)
         
         click.echo(f"✓ Generated {len(generated_files)} files:")
         for module_name, file_path in generated_files.items():

@@ -56,4 +56,8 @@ async general_exception_handler(request: Request, exc: Exception):
   # Log unexpected errors
   # Return generic error response
 
+if __name__ == "__main__":
+  import uvicorn
+  uvicorn.run(app, host="0.0.0.0", port=8000)
+
 notes: CORS configured for development, comprehensive error handling, startup/shutdown lifecycle management, API versioning with prefix

@@ -1,6 +1,8 @@
 # core.database
 Database configuration and connection management
 
+deps: @..models.user[User]; @..models.task[Task]
+
 DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
