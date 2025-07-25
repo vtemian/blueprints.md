@@ -78,7 +78,3 @@ Thumbs.db
 # Project specific
 *.py.bak
 generated/
-
-# Generated Python files in examples (keep blueprints only)
-examples/**/*.py
-!examples/**/requirements.py
