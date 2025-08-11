@@ -1,88 +1,103 @@
+import logging
+import uuid
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import AsyncGenerator, Optional
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import uvicorn
+from pydantic import BaseModel
+from pydantic_settings import BaseSettings
 
-from api.tasks import router as tasks_router
-from api.users import router as users_router
-from core.database import init_db
+logger = logging.getLogger(__name__)
 
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+    CORS_ORIGINS: list[str] = ["*"]
+    TRUSTED_HOSTS: list[str] = ["*"]
+    RATE_LIMIT: str = "100/minute"
+    ENV: str = "development"
+    
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": True
+    }
+
+class RequestIDMiddleware:
+    """Middleware to add request ID header for tracing."""
+    
+    def __init__(self, app: FastAPI):
+        self.app = app
+        
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+            
+        request_id = str(uuid.uuid4())
+        scope["state"] = {"request_id": request_id}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = message.get("headers", [])
+                headers.append((b"X-Request-ID", request_id.encode()))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> None:
-    """Lifecycle manager for startup/shutdown events."""
-    init_db()
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Handle application startup/shutdown events."""
+    logger.info("Starting up application...")
+    # Add startup logic here (e.g. database connections)
+    
     yield
+    
+    logger.info("Shutting down application...")
+    # Add cleanup logic here
 
-
-app = FastAPI(
-    title="Task Management API",
-    description="A simple task management system with user authentication",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-app.include_router(tasks_router, prefix="/api/v1", tags=["tasks"])
-app.include_router(users_router, prefix="/api/v1", tags=["users"])
-
-
-@app.get("/", tags=["health"])
-async def root() -> Dict[str, str]:
-    """Basic health check endpoint."""
-    return {"status": "healthy"}
-
-
-@app.get("/health", tags=["health"])
-async def health_check() -> Dict[str, str]:
-    """Detailed health check with database connectivity status."""
-    try:
-        return {
-            "status": "healthy",
-            "database": "connected"
-        }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "database": str(e)
-        }
-
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Custom HTTP exception handler."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "detail": exc.detail,
-            "status_code": exc.status_code
-        }
-    )
-
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global exception handler for unhandled errors."""
+async def error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Global error handler."""
+    logger.exception("Unhandled error", extra={"request_id": request.state.request_id})
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "detail": "Internal server error",
-            "status_code": status.HTTP_500_INTERNAL_SERVER_ERROR
-        }
+        content={"detail": "Internal server error"}
     )
 
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    settings = Settings()
+    
+    app = FastAPI(
+        title="API App",
+        lifespan=lifespan,
+        docs_url="/docs" if settings.ENV == "development" else None
+    )
+
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+
+    # Request ID middleware
+    app.add_middleware(RequestIDMiddleware)
+
+    # Error handlers
+    app.exception_handler(Exception)(error_handler)
+
+    # Health check
+    @app.get("/health", status_code=status.HTTP_200_OK)
+    async def health_check():
+        return {"status": "healthy"}
+
+    return app
+
+app = create_app()
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

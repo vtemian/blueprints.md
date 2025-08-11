@@ -1,63 +1,33 @@
 # app
-FastAPI application entrypoint and configuration
 
-deps: @.api.tasks[router as tasks_router]; @.api.users[router as users_router]; @.core.database[init_db]
+Create the main FastAPI application with routing, middleware, and lifecycle management.
 
-app = FastAPI(
-    title="Task Management API",
-    description="A simple task management system with user authentication",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
+Dependencies: fastapi, @./api/tasks, @./api/users, @./core/database
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+Requirements:
+- Create FastAPI application instance with proper metadata (title, description, version)
+- Include API documentation endpoints (/docs, /redoc)
+- Add CORS middleware for cross-origin requests
+- Include task and user routers with /api/v1 prefix
+- Implement application startup and shutdown event handlers
+- Add basic health check endpoints for monitoring
 
-# Include API routers
-app.include_router(tasks_router, prefix="/api/v1", tags=["tasks"])
-app.include_router(users_router, prefix="/api/v1", tags=["users"])
+Application Setup:
+- Configure CORS to allow appropriate origins (configurable for production)
+- Set up API versioning with /api/v1 prefix for all endpoints
+- Include proper error handling middleware
+- Add request/response logging for debugging
+- Configure OpenAPI documentation with comprehensive descriptions
 
-@app.on_event("startup")
-async startup_event():
-  """Initialize database tables and connections on startup."""
-  # Initialize database
-  
-@app.on_event("shutdown") 
-async shutdown_event():
-  """Clean up resources on shutdown."""
-  # Close database connections
-  
-@app.get("/")
-async root() -> dict[str, str]:
-  """Basic health check endpoint."""
-  # Return API status and version
-  
-@app.get("/health")
-async health_check() -> dict[str, str]:
-  """Detailed health check with database connectivity status."""
-  # Check database connection
-  # Return comprehensive health status
+Lifecycle Management:
+- Initialize database tables on startup
+- Close database connections on shutdown
+- Include health check endpoint that verifies database connectivity
+- Add basic root endpoint that returns API status and version
 
-@app.exception_handler(HTTPException)
-async http_exception_handler(request: Request, exc: HTTPException):
-  """Custom HTTP exception handler."""
-  # Log error and return formatted response
-
-@app.exception_handler(Exception)
-async general_exception_handler(request: Request, exc: Exception):
-  """Global exception handler for unhandled errors."""
-  # Log unexpected errors
-  # Return generic error response
-
-if __name__ == "__main__":
-  import uvicorn
-  uvicorn.run(app, host="0.0.0.0", port=8000)
-
-notes: CORS configured for development, comprehensive error handling, startup/shutdown lifecycle management, API versioning with prefix
+Additional Notes:
+- Make CORS origins configurable via environment variables
+- Include comprehensive error handlers for HTTP exceptions
+- Add request ID tracking for better debugging
+- Consider adding rate limiting middleware for production
+- Include graceful shutdown handling for production deployments

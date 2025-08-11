@@ -1,51 +1,48 @@
 # main
-Task Management API - A FastAPI-based REST API for managing tasks and users
 
-## Project Overview
-A complete task management system built with FastAPI, featuring user authentication, task CRUD operations, and SQLite database integration.
+Project setup and configuration for the FastAPI Task Management API.
 
-## Third-party Dependencies
-- fastapi>=0.104.0  # Web framework
-- uvicorn[standard]>=0.24.0  # ASGI server
-- sqlalchemy>=2.0.0  # Database ORM
-- aiosqlite>=0.19.0  # Async SQLite driver
-- bcrypt>=4.0.0  # Password hashing
-- python-jose[cryptography]>=3.3.0  # JWT tokens
-- python-multipart>=0.0.6  # Form data parsing
-- pydantic>=2.0.0  # Data validation
+Dependencies: fastapi, uvicorn, sqlalchemy, pydantic, python-dotenv
 
-## Development Dependencies
-- pytest>=7.0.0  # Testing framework
-- pytest-asyncio>=0.21.0  # Async testing
-- httpx>=0.25.0  # HTTP client for testing
-- black>=23.0.0  # Code formatting
-- mypy>=1.5.0  # Type checking
+Project Setup:
+- Create a FastAPI-based task management API
+- Set up proper project structure with models, API routes, and core functionality
+- Configure development environment with hot reloading
+- Include database setup and configuration
+- Provide development and production server configurations
 
-## Installation & Setup
-```bash
-# Install dependencies
-pip install -r requirements.txt
+Development Environment:
+- Use uvicorn for development server with auto-reload
+- Default server configuration: host=0.0.0.0, port=8000
+- Support environment variable configuration (.env file)
+- Include comprehensive logging setup
+- Hot reload enabled for development
 
-# Set environment variables
-export DATABASE_URL=sqlite:///./tasks.db
-export SECRET_KEY=your-secret-key-here
-export ACCESS_TOKEN_EXPIRE_MINUTES=30
-```
+Makefile Commands:
+- `make install` - Install production dependencies
+- `make install-dev` - Install development dependencies including testing tools  
+- `make run` - Start the development server
+- `make dev` - Start with auto-reload enabled
+- `make test` - Run the test suite
+- `make clean` - Clean up temporary files and caches
 
-## Running the Application
-```bash
-# Development server
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+Project Structure:
+- app.py - Main FastAPI application with middleware and routing
+- models/ - SQLAlchemy database models (User, Task)
+- api/ - API route handlers (users, tasks)  
+- core/ - Core functionality (database setup, configuration)
+- main.py - Server startup script
 
-# Production server
-uvicorn app:app --host 0.0.0.0 --port 8000 --workers 4
-```
+Dependencies to Install:
+- fastapi - Web framework
+- uvicorn - ASGI server for development and production
+- sqlalchemy - Database ORM
+- pydantic - Data validation and serialization
+- python-dotenv - Environment variable management
 
-## Architecture Notes
-- Uses JWT tokens for authentication
-- SQLite database with SQLAlchemy ORM
-- Async/await pattern throughout
-- Pydantic models for request/response validation
-- Modular router-based API structure
-
-notes: RESTful API design, secure authentication, comprehensive error handling, async database operations
+Additional Notes:
+- Include health check endpoint for monitoring
+- Support graceful shutdown handling
+- Configure CORS for frontend integration
+- Include comprehensive error handling and logging
+- Environment-specific configuration (development/production)

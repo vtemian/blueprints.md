@@ -2,17 +2,25 @@
 
 __version__ = "0.1.0"
 
-from .parser import BlueprintParser, Blueprint, Component, BlueprintReference
-from .generator import CodeGenerator
+# Import original classes for backward compatibility
+from .parser import Blueprint, Component, BlueprintReference
 from .resolver import BlueprintResolver, ResolvedBlueprint
 
+# Import the hybrid system as the default
+from .natural_parser import HybridBlueprintParser
+from .natural_generator import NaturalCodeGenerator, UnifiedBlueprintSystem
+
+# Use hybrid system as defaults
+BlueprintParser = HybridBlueprintParser
+CodeGenerator = NaturalCodeGenerator
+
 __all__ = [
-    "BlueprintParser", 
-    "Blueprint", 
-    "Component", 
+    "BlueprintParser",
+    "Blueprint",
+    "Component",
     "BlueprintReference",
-    "CodeGenerator", 
+    "CodeGenerator",
     "BlueprintResolver",
     "ResolvedBlueprint",
-    "__version__"
+    "__version__",
 ]

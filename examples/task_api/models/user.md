@@ -1,20 +1,19 @@
 # models.user
-User data model for authentication and task ownership
 
-User:
-  __tablename__ = "users"
-  
-  - id: Column[Integer] = primary_key=True
-  - username: Column[String(50)] = unique=True, nullable=False
-  - email: Column[String(100)] = unique=True, nullable=False
-  - hashed_password: Column[String(255)] = nullable=False
-  - is_active: Column[Boolean] = default=True
-  - created_at: Column[DateTime] = default=datetime.utcnow
-  
-  - tasks: relationship["Task"] = back_populates="user"
-  
-  - set_password(password: str) -> None
-  - verify_password(password: str) -> bool
-  - to_dict() -> dict[str, any]  # exclude password
+Create a User model for authentication and task ownership in the task management system.
 
-notes: add unique indexes on username and email, use bcrypt for password hashing
+Dependencies: sqlalchemy, bcrypt, @./task
+
+Requirements:
+- User table with id, username, email, hashed_password, is_active, created_at fields
+- Username and email must be unique and not nullable
+- Include relationship to tasks (one user has many tasks)
+- Add methods for password hashing and verification using bcrypt
+- Support converting user data to dictionary format for API responses (exclude password)
+
+Additional Notes:
+- Hash passwords with bcrypt before storing in database
+- Add unique database indexes on username and email for fast lookups
+- Use is_active field for soft deletion instead of hard deletes
+- Include created_at timestamp for audit trails
+- to_dict method should never expose password or hashed_password fields

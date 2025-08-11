@@ -16,33 +16,17 @@ help:
 requirements.txt:
 	@echo 'Generating requirements.txt...'
 	@echo '# Production dependencies' > requirements.txt
-	@echo 'fastapi>=0.104.0' >> requirements.txt
-	@echo 'uvicorn[standard]>=0.24.0' >> requirements.txt
-	@echo 'sqlalchemy>=2.0.0' >> requirements.txt
-	@echo 'aiosqlite>=0.19.0' >> requirements.txt
-	@echo 'bcrypt>=4.0.0' >> requirements.txt
-	@echo 'python-jose[cryptography]>=3.3.0' >> requirements.txt
-	@echo 'python-multipart>=0.0.6' >> requirements.txt
-	@echo 'pydantic>=2.0.0' >> requirements.txt
-
-requirements-dev.txt:
-	@echo 'Generating requirements-dev.txt...'
-	@echo '# Development dependencies' > requirements-dev.txt
-	@echo 'pytest>=7.0.0' >> requirements-dev.txt
-	@echo 'pytest-asyncio>=0.21.0' >> requirements-dev.txt
-	@echo 'httpx>=0.25.0' >> requirements-dev.txt
-	@echo 'black>=23.0.0' >> requirements-dev.txt
-	@echo 'mypy>=1.5.0' >> requirements-dev.txt
+	@echo 'fastapi' >> requirements.txt
+	@echo 'uvicorn' >> requirements.txt
+	@echo 'sqlalchemy' >> requirements.txt
+	@echo 'pydantic' >> requirements.txt
+	@echo 'python-dotenv' >> requirements.txt
 
 install: requirements.txt
 	@echo 'Installing production dependencies...'
 	pip install -r requirements.txt
 
-install-dev: requirements-dev.txt
-	@echo 'Installing development dependencies...'
-	pip install -r requirements-dev.txt
-
-setup: install install-dev
+setup: install
 	@echo 'Project setup complete!'
 	@echo 'Environment variables to set:'
 

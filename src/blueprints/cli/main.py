@@ -20,7 +20,6 @@ def main(ctx: click.Context, verbose: bool) -> None:
     ctx.obj["verbose"] = verbose
 
 
-
 @main.command()
 @click.argument("blueprint_file", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -52,7 +51,15 @@ def main(ctx: click.Context, verbose: bool) -> None:
     help="Enable/disable code verification (default: enabled)",
 )
 @click.pass_context
-def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], language: str, api_key: Optional[str], force: bool, verify: bool) -> None:
+def generate(
+    ctx: click.Context,
+    blueprint_file: Path,
+    output: Optional[Path],
+    language: str,
+    api_key: Optional[str],
+    force: bool,
+    verify: bool,
+) -> None:
     """Generate source code from a blueprint file using Claude API."""
     verbose = ctx.obj.get("verbose", False)
 
@@ -61,9 +68,15 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
 
     try:
         # Resolve blueprint dependencies
-        resolver = BlueprintResolver(project_root=blueprint_file.parent.parent if blueprint_file.parent.name != "." else blueprint_file.parent)
+        resolver = BlueprintResolver(
+            project_root=(
+                blueprint_file.parent.parent
+                if blueprint_file.parent.name != "."
+                else blueprint_file.parent
+            )
+        )
         resolved = resolver.resolve(blueprint_file)
-        
+
         if verbose:
             click.echo(f"  Module: {resolved.main.module_name}")
             click.echo(f"  Components: {len(resolved.main.components)}")
@@ -71,10 +84,10 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
                 click.echo(f"  Dependencies: {len(resolved.dependencies)} blueprints")
                 for dep in resolved.dependencies:
                     click.echo(f"    - {dep.module_name}")
-        
+
         # Generate code using Claude API with dependency context
         generator = CodeGenerator(api_key=api_key)
-        
+
         # Determine output path
         if output is None:
             # Default to same directory as blueprint file
@@ -86,23 +99,25 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
                 # Fallback
                 ext = {
                     "python": ".py",
-                    "javascript": ".js", 
+                    "javascript": ".js",
                     "typescript": ".ts",
                     "java": ".java",
                     "go": ".go",
-                    "rust": ".rs"
+                    "rust": ".rs",
                 }.get(language.lower(), ".txt")
                 output = blueprint_file.parent / f"{blueprint_file.stem}{ext}"
-        
+
         # Generate single file with full dependency context
-        output_path = generator.generate_single_with_context(resolved, output, language, force, verify)
-        
+        output_path = generator.generate_single_with_context(
+            resolved, output, language, force, verify
+        )
+
         click.echo(f"✓ Generated code saved to: {output_path}")
-        
+
         if verbose:
             click.echo(f"  Language: {language}")
             click.echo(f"  Size: {output_path.stat().st_size} bytes")
-            
+
     except ValueError as e:
         click.echo(f"❌ Error: {e}", err=True)
         ctx.exit(1)
@@ -110,6 +125,7 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
         click.echo(f"❌ Failed to generate code: {e}", err=True)
         if verbose:
             import traceback
+
             traceback.print_exc()
         ctx.exit(1)
 
@@ -139,7 +155,14 @@ def generate(ctx: click.Context, blueprint_file: Path, output: Optional[Path], l
     help="Enable/disable code verification (default: enabled)",
 )
 @click.pass_context
-def generate_project(ctx: click.Context, path: Path, language: str, api_key: Optional[str], force: bool, verify: bool) -> None:
+def generate_project(
+    ctx: click.Context,
+    path: Path,
+    language: str,
+    api_key: Optional[str],
+    force: bool,
+    verify: bool,
+) -> None:
     """Generate entire project from a blueprint with dependencies (files generated alongside blueprints)."""
     verbose = ctx.obj.get("verbose", False)
 
@@ -148,13 +171,14 @@ def generate_project(ctx: click.Context, path: Path, language: str, api_key: Opt
         # First try main.md
         main_md = path / "main.md"
         app_md = path / "app.md"
-        
+
         blueprint_file = None
-        
+
         if main_md.exists():
             # Check if main.md has blueprint dependencies
             try:
-                from ..parser import BlueprintParser
+                from ..natural_parser import HybridBlueprintParser as BlueprintParser
+
                 parser = BlueprintParser()
                 main_blueprint = parser.parse_file(main_md)
                 if main_blueprint.blueprint_refs:
@@ -175,7 +199,10 @@ def generate_project(ctx: click.Context, path: Path, language: str, api_key: Opt
         elif app_md.exists():
             blueprint_file = app_md
         else:
-            click.echo(f"❌ Error: Neither main.md nor app.md found in directory {path}", err=True)
+            click.echo(
+                f"❌ Error: Neither main.md nor app.md found in directory {path}",
+                err=True,
+            )
             ctx.exit(1)
     else:
         blueprint_file = path
@@ -186,36 +213,40 @@ def generate_project(ctx: click.Context, path: Path, language: str, api_key: Opt
 
     try:
         # Resolve blueprint dependencies
-        resolver = BlueprintResolver(project_root=blueprint_file.parent.parent if blueprint_file.parent.name != "." else blueprint_file.parent)
+        # For generate-project, the project root should be the directory containing the blueprint
+        project_root = blueprint_file.parent if path.is_dir() else blueprint_file.parent
+        resolver = BlueprintResolver(project_root=project_root)
         resolved = resolver.resolve(blueprint_file)
-        
+
         if verbose:
             click.echo(f"  Main module: {resolved.main.module_name}")
             click.echo(f"  Total blueprints: {len(resolved.generation_order)}")
             click.echo(f"  Generation order:")
             for i, bp in enumerate(resolved.generation_order, 1):
                 click.echo(f"    {i}. {bp.module_name}")
-        
+
         # Generate code using Claude API with separate calls
         generator = CodeGenerator(api_key=api_key)
-        
+
         # Pass main.md path for Makefile generation if different from blueprint_file
         main_md_path = None
         if path.is_dir():
             potential_main = path / "main.md"
             if potential_main.exists() and potential_main != blueprint_file:
                 main_md_path = potential_main
-        
-        generated_files = generator.generate_project(resolved, Path("."), language, force, main_md_path, verify)
-        
+
+        generated_files = generator.generate_project(
+            resolved, Path("."), language, force, main_md_path, verify
+        )
+
         click.echo(f"✓ Generated {len(generated_files)} files:")
         for module_name, file_path in generated_files.items():
             click.echo(f"  {module_name} -> {file_path}")
-        
+
         if verbose:
             total_size = sum(f.stat().st_size for f in generated_files.values())
             click.echo(f"  Total size: {total_size} bytes")
-            
+
     except ValueError as e:
         click.echo(f"❌ Error: {e}", err=True)
         ctx.exit(1)
@@ -223,6 +254,7 @@ def generate_project(ctx: click.Context, path: Path, language: str, api_key: Opt
         click.echo(f"❌ Failed to generate project: {e}", err=True)
         if verbose:
             import traceback
+
             traceback.print_exc()
         ctx.exit(1)
 
@@ -270,22 +302,23 @@ def init(ctx: click.Context, module_name: str, output: Optional[Path]) -> None:
     if verbose:
         click.echo(f"Creating blueprint file: {blueprint_file}")
 
-    # Generate compact blueprint template
+    # Generate natural language blueprint template
     template = f"""# {module_name}
-Brief description of what this module does
 
-ExampleClass:
-  - __init__(param: str)
-  - method_name(param: str) -> str  # Description
-  - property_name: str
+Brief description of what this module does and its purpose in the system.
 
-example_function(param: int) -> bool:
-  \"\"\"Function description\"\"\"
-  # Implementation notes
+Dependencies: external_library, @../other/module
 
-CONSTANT_NAME: str = "value"
+Requirements:
+- Key requirement or feature that needs to be implemented
+- Another important requirement with specific details
+- Include validation, error handling, and security considerations
 
-notes: implementation detail 1, performance consideration, future enhancement
+Additional Notes:
+- Performance considerations or optimization requirements
+- Security requirements or constraints
+- Business rules or context that affects implementation
+- Future enhancement possibilities
 """
 
     blueprint_file.write_text(template)

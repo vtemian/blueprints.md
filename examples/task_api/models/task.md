@@ -1,24 +1,20 @@
 # models.task
-Task data model for the task management system
 
-deps: @.user[User]
+Create a Task model for the task management system with user ownership and status tracking.
 
-Task:
-  __tablename__ = "tasks"
-  
-  - id: Column[Integer] = primary_key=True
-  - title: Column[String(200)] = nullable=False
-  - description: Column[String] = nullable=True
-  - completed: Column[Boolean] = default=False
-  - created_at: Column[DateTime] = default=datetime.utcnow
-  - updated_at: Column[DateTime] = default=datetime.utcnow, onupdate=datetime.utcnow
-  - user_id: Column[Integer] = ForeignKey("users.id")
-  
-  - user: relationship[User] = back_populates="tasks"
-  
-  - mark_completed() -> None
-  - mark_incomplete() -> None
-  - update_title(title: str) -> None
-  - to_dict() -> dict[str, any]
+Dependencies: sqlalchemy, @./user
 
-notes: add validation for title length, index on user_id and completed status
+Requirements:
+- Task table with id, title, description, completed, created_at, updated_at, user_id fields
+- Title is required (not nullable), description is optional
+- Include foreign key relationship to user (many tasks belong to one user)
+- Add methods for marking tasks as completed/incomplete
+- Support updating task title and description
+- Include method to convert task data to dictionary for API responses
+
+Additional Notes:
+- Add database index on user_id for efficient user task queries
+- Add index on completed status for filtering completed vs incomplete tasks
+- Include created_at and updated_at timestamps with automatic updates
+- Validate title length (e.g., max 200 characters)
+- Ensure user_id foreign key references users.id with proper constraints

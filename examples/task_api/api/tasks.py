@@ -1,138 +1,156 @@
+from datetime import datetime
 from typing import List, Optional
+from uuid import UUID, uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
+from pydantic import BaseModel
+from sqlalchemy import Boolean, Column, DateTime, String, select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from core.database import get_db
-from models.task import Task
-from models.user import User
+# Database configuration
+DATABASE_URL = "sqlite+aiosqlite:///./tasks.db"
 
+# SQLAlchemy models
+class Base(DeclarativeBase):
+    pass
+
+class TaskModel(Base):
+    __tablename__ = "tasks"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    title = Column(String, nullable=False)
+    description = Column(String)
+    completed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# Pydantic models
+class TaskBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+    completed: bool = False
+
+class TaskCreate(TaskBase):
+    pass
+
+class TaskUpdate(TaskBase):
+    title: Optional[str] = None
+    completed: Optional[bool] = None
+
+class Task(TaskBase):
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+class TaskList(BaseModel):
+    tasks: List[Task]
+    total: int
+    page: int
+    per_page: int
+
+# Database setup
+engine = create_async_engine(DATABASE_URL)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+async def get_db() -> AsyncSession:
+    async with AsyncSessionLocal() as session:
+        yield session
+
+# Router
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-@router.get("/", response_model=List[dict])
-async def get_tasks(
-    db: Session = Depends(get_db),
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=10, le=100)
-) -> List[dict]:
-    """Get paginated list of tasks."""
-    try:
-        tasks = db.query(Task).offset(skip).limit(limit).all()
-        return [task.to_dict() for task in tasks]
-    except SQLAlchemyError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database error occurred"
-        )
-
-@router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_task(
-    title: str,
-    description: Optional[str] = None,
-    user_id: int = 1,
-    db: Session = Depends(get_db)
-) -> dict:
+@router.post("/", response_model=Task, status_code=status.HTTP_201_CREATED)
+async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_db)) -> Task:
     """Create a new task."""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
+    db_task = TaskModel(**task.model_dump())
+    db.add(db_task)
+    await db.commit()
+    await db.refresh(db_task)
+    return db_task
 
-    task = Task(title=title, description=description, user_id=user_id)
-    try:
-        db.add(task)
-        db.commit()
-        db.refresh(task)
-        return task.to_dict()
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create task"
-        )
+@router.get("/", response_model=TaskList)
+async def list_tasks(
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, gt=0),
+    per_page: int = Query(10, gt=0, le=100),
+    completed: Optional[bool] = None
+) -> TaskList:
+    """List tasks with pagination and optional completion filter."""
+    query = select(TaskModel)
+    
+    if completed is not None:
+        query = query.filter(TaskModel.completed == completed)
+    
+    # Get total count
+    result = await db.execute(select(TaskModel))
+    total = len(result.scalars().all())
+    
+    # Apply pagination
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    result = await db.execute(query)
+    tasks = result.scalars().all()
+    
+    return TaskList(
+        tasks=tasks,
+        total=total,
+        page=page,
+        per_page=per_page
+    )
 
-@router.get("/{task_id}", response_model=dict)
-async def get_task(task_id: int, db: Session = Depends(get_db)) -> dict:
+@router.get("/{task_id}", response_model=Task)
+async def get_task(task_id: UUID, db: AsyncSession = Depends(get_db)) -> Task:
     """Get a specific task by ID."""
-    task = db.query(Task).filter(Task.id == task_id).first()
+    result = await db.execute(select(TaskModel).filter(TaskModel.id == str(task_id)))
+    task = result.scalar_one_or_none()
+    
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
-    return task.to_dict()
+    
+    return task
 
-@router.put("/{task_id}", response_model=dict)
+@router.patch("/{task_id}", response_model=Task)
 async def update_task(
-    task_id: int,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    db: Session = Depends(get_db)
-) -> dict:
+    task_id: UUID,
+    task_update: TaskUpdate,
+    db: AsyncSession = Depends(get_db)
+) -> Task:
     """Update a task."""
-    task = db.query(Task).filter(Task.id == task_id).first()
+    result = await db.execute(select(TaskModel).filter(TaskModel.id == str(task_id)))
+    task = result.scalar_one_or_none()
+    
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
-
-    if title:
-        task.title = title
-    if description is not None:
-        task.description = description
-
-    try:
-        db.commit()
-        db.refresh(task)
-        return task.to_dict()
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update task"
-        )
-
-@router.patch("/{task_id}/complete", response_model=dict)
-async def complete_task(task_id: int, db: Session = Depends(get_db)) -> dict:
-    """Mark a task as completed."""
-    task = db.query(Task).filter(Task.id == task_id).first()
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
-        )
-
-    task.completed = True
-    try:
-        db.commit()
-        db.refresh(task)
-        return task.to_dict()
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to complete task"
-        )
+    
+    update_data = task_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(task, field, value)
+    
+    await db.commit()
+    await db.refresh(task)
+    return task
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task_id: int, db: Session = Depends(get_db)) -> None:
+async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
     """Delete a task."""
-    task = db.query(Task).filter(Task.id == task_id).first()
+    result = await db.execute(select(TaskModel).filter(TaskModel.id == str(task_id)))
+    task = result.scalar_one_or_none()
+    
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
-
-    try:
-        db.delete(task)
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete task"
-        )
+    
+    await db.delete(task)
+    await db.commit()

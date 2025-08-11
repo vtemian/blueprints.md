@@ -1,22 +1,26 @@
 # core.database
-Database configuration and connection management
 
-deps: @..models.user[User]; @..models.task[Task]
+Set up database configuration and connection management for the task management API.
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
+Dependencies: sqlalchemy, sqlalchemy.orm
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+Requirements:
+- Create SQLAlchemy database engine with configurable database URL
+- Set up database session management with proper scoping
+- Create declarative base class for all models to inherit from
+- Include database initialization function to create all tables
+- Add dependency function for FastAPI to get database sessions
+- Support both SQLite for development and PostgreSQL for production
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Configuration:
+- Database URL should be configurable via environment variable
+- Use connection pooling for production databases
+- Enable SQL query logging in development mode
+- Set proper database session timeouts and connection limits
 
-Base = declarative_base()
-
-init_db() -> None:
-  """Initialize database tables"""
-  # Create all tables
-
-get_db() -> Generator[Session, None, None]:
-  """Database session dependency"""
-  # Yield session with proper cleanup
-
-notes: add connection pooling for production, implement database migrations, add health checks
+Additional Notes:
+- Use SQLAlchemy 2.0+ async patterns if needed for better performance
+- Implement proper session cleanup with try/finally blocks
+- Add health check function to verify database connectivity
+- Consider adding database migration support for future schema changes
+- Include error handling for database connection failures
