@@ -78,3 +78,5 @@ Thumbs.db
 # Project specific
 *.py.bak
 generated/
+
+.claude_prompt_history.json
