@@ -163,7 +163,7 @@ EmailService:
   - Log all email events
 ```
 
-Claude understands intent and generates complete implementation with SendGrid integration, retry decorators, and proper testing mocks.
+Claude understands intent and generates complete implementation with SendGrid integration, retry decorators, and proper error handling.
 
 ### **2. Architecture from Requirements**
 ```bash
@@ -228,20 +228,29 @@ Task Repository:
 
 Claude recognizes patterns and generates complete implementations with interfaces, dependency injection, and unit of work.
 
-### **5. Automatic Test Generation**
-```bash
-# Generate code
-blueprints generate services/payment.md
+### **5. Framework-Aware Generation**
+```markdown
+# services.payment
 
-# Auto-generate comprehensive tests
-blueprints generate-tests services/payment.py
+Payment processing service with Stripe integration.
 
-# Get:
-✅ Unit tests with mocks
-✅ Integration tests
-✅ Edge case coverage
-✅ Fixtures and factories
+Dependencies: @./models/order, @./models/user
+
+Requirements:
+- Stripe payment processing
+- Webhook handling for payment events
+- Refund processing
+- Payment method storage (PCI compliant)
+- Subscription management
+- Invoice generation
+
+Security:
+- PCI compliance measures
+- Webhook signature verification
+- Idempotency key support
 ```
+
+Claude understands payment processing requirements and generates secure, production-ready Stripe integration with proper error handling and webhook management.
 
 ## 🚀 Getting Started
 
@@ -391,7 +400,7 @@ Blueprint → AI Understanding → Contextual Generation → Verification → Se
 | Time to MVP | 2 weeks | 2 hours | **7x faster** |
 | Lines of boilerplate | 5000+ | 0 | **100% reduction** |
 | Import errors | Common | Auto-fixed | **Zero** |
-| Test coverage | Manual | Auto-generated | **80%+ automatic** |
+| Test coverage | Manual | Built-in validation | **Production-ready** |
 | Documentation | Often skipped | Always included | **100% coverage** |
 
 ## 🛠️ Configuration
@@ -405,7 +414,7 @@ export BLUEPRINTS_MODEL="claude-3-5-sonnet-20241022"
 export BLUEPRINTS_CONCURRENCY=5              # Parallel processing
 export BLUEPRINTS_VERIFY_IMPORTS=true        # Import validation
 export BLUEPRINTS_AUTO_RETRY=true            # Automatic fixes
-export BLUEPRINTS_GENERATE_TESTS=true        # Auto test generation
+export BLUEPRINTS_AUTO_FIX=true              # Auto-fix common issues
 export BLUEPRINTS_LANGUAGE="python"          # Target language
 ```
 
