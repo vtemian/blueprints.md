@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from collections import deque, defaultdict
 
 from .parser import Blueprint, BlueprintReference
-from .natural_parser import HybridBlueprintParser as BlueprintParser
+from .parser import BlueprintParser
 
 
 @dataclass

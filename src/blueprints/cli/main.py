@@ -177,7 +177,7 @@ def generate_project(
         if main_md.exists():
             # Check if main.md has blueprint dependencies
             try:
-                from ..natural_parser import HybridBlueprintParser as BlueprintParser
+                from ..parser import BlueprintParser
 
                 parser = BlueprintParser()
                 main_blueprint = parser.parse_file(main_md)
