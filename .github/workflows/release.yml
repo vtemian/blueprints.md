@@ -1,0 +1,90 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Extract version from tag
+        id: version
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --oneline)
+          else
+            COMMITS=$(git log --oneline ${PREV_TAG}..HEAD)
+          fi
+          
+          # Format changelog
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "## What's Changed" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          
+          # Group commits by type
+          echo "### Features" >> $GITHUB_OUTPUT
+          echo "$COMMITS" | grep -E "^[0-9a-f]+ feat:" | sed 's/^[0-9a-f]* feat: /- /' >> $GITHUB_OUTPUT || true
+          echo "" >> $GITHUB_OUTPUT
+          
+          echo "### Bug Fixes" >> $GITHUB_OUTPUT
+          echo "$COMMITS" | grep -E "^[0-9a-f]+ fix:" | sed 's/^[0-9a-f]* fix: /- /' >> $GITHUB_OUTPUT || true
+          echo "" >> $GITHUB_OUTPUT
+          
+          echo "### Documentation" >> $GITHUB_OUTPUT
+          echo "$COMMITS" | grep -E "^[0-9a-f]+ docs:" | sed 's/^[0-9a-f]* docs: /- /' >> $GITHUB_OUTPUT || true
+          echo "" >> $GITHUB_OUTPUT
+          
+          echo "### Other Changes" >> $GITHUB_OUTPUT
+          echo "$COMMITS" | grep -vE "^[0-9a-f]+ (feat|fix|docs):" | sed 's/^[0-9a-f]* /- /' >> $GITHUB_OUTPUT || true
+          echo "" >> $GITHUB_OUTPUT
+          
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ steps.version.outputs.TAG }}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: Release ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## 🚀 blueprints.md ${{ steps.version.outputs.VERSION }}
+            
+            ${{ steps.changelog.outputs.CHANGELOG }}
+            
+            ## Installation
+            
+            ```bash
+            # Quick start with uvx (no installation needed)
+            uvx --from blueprints-md blueprints --version
+            
+            # Install with pip
+            pip install blueprints-md==${{ steps.version.outputs.VERSION }}
+            
+            # Install with uv
+            uv tool install blueprints-md==${{ steps.version.outputs.VERSION }}
+            ```
+            
+            ## Quick Start
+            
+            ```bash
+            export ANTHROPIC_API_KEY="your-key"
+            uvx --from blueprints-md blueprints generate api/tasks.md
+            ```
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, 'rc') || contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'alpha') }}
+          generate_release_notes: true

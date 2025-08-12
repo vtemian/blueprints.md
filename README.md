@@ -65,6 +65,10 @@ Features:
 
 ```bash
 # Run this command 🚀
+uvx --from blueprints-md blueprints generate api/tasks.md
+
+# Or if installed globally
+pip install blueprints-md
 blueprints generate api/tasks.md
 
 # Get production-ready code with:
@@ -186,14 +190,14 @@ blueprints generate-from-requirements requirements.txt
 
 ### **3. Cross-Language Generation**
 ```bash
-# Python blueprint
-blueprints generate api/users.md --language python
+# Python blueprint (using uvx for one-off execution)
+uvx --from blueprints-md blueprints generate api/users.md --language python
 
 # Same blueprint → TypeScript
-blueprints generate api/users.md --language typescript
+uvx --from blueprints-md blueprints generate api/users.md --language typescript
 
 # Same blueprint → Go
-blueprints generate api/users.md --language go
+uvx --from blueprints-md blueprints generate api/users.md --language go
 ```
 
 ### **4. Design Pattern Implementation**
@@ -254,15 +258,32 @@ Claude understands payment processing requirements and generates secure, product
 
 ## 🚀 Getting Started
 
+### Installation Options
+
 ```bash
-# 1. Install (Python 3.11+)
-pip install blueprints-md  # Coming soon!
-# Or install from source
+# Option 1: Use without installation (recommended for trying out)
+uvx --from blueprints-md blueprints --help
+
+# Option 2: Install as a tool with uv (recommended for regular use)
+uv tool install blueprints-md
+blueprints --version
+
+# Option 3: Install with pip
+pip install blueprints-md
+
+# Option 4: Install from source
 git clone https://github.com/yourusername/blueprints.md
 cd blueprints.md && uv sync
+```
 
-# 2. Set your API key
+### Quick Start
+
+```bash
+# 1. Set your API key
 export ANTHROPIC_API_KEY="your-key"
+
+# 2. Generate code from a blueprint (no installation needed!)
+uvx --from blueprints-md blueprints generate api/tasks.md
 
 # 3. Create your first blueprint
 mkdir my-app && cd my-app
@@ -293,7 +314,7 @@ Security:
 EOF
 
 # 4. Generate your application
-blueprints generate-project .
+uvx --from blueprints-md blueprints generate-project .
 
 # 5. Run it!
 make run  # Full app running at http://localhost:8000
@@ -302,7 +323,10 @@ make run  # Full app running at http://localhost:8000
 ## 📊 Real-World Example
 
 ```bash
-# Generate a complete e-commerce backend
+# Generate a complete e-commerce backend (no installation needed!)
+uvx --from blueprints-md blueprints generate-project examples/ecommerce/
+
+# Or if you have it installed
 blueprints generate-project examples/ecommerce/
 
 # You get:
