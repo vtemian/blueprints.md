@@ -41,17 +41,26 @@ Unlike traditional code generators, blueprints.md uses an **agentic AI system** 
 ```
 ```markdown
 # api.tasks
-Task CRUD operations with authentication
 
-deps: @./models/task[Task], @./auth[require_auth]
+Task CRUD operations with authentication.
 
-router = APIRouter("/tasks")
+Dependencies: @./models/task, @./auth
 
-get_tasks(user: User = Depends(require_auth)) -> List[Task]:
-  """Get all tasks for authenticated user"""
+Requirements:
+- FastAPI router for task endpoints
+- Authentication required for all operations
+- Full CRUD operations (create, read, update, delete)
+- Filter tasks by user
+- Proper error handling and validation
+- Async database operations
 
-create_task(task: TaskCreate, user: User = Depends(require_auth)) -> Task:
-  """Create a new task with validation"""
+Features:
+- Get all tasks for authenticated user
+- Create new task with validation
+- Update existing task (owner only)
+- Delete task (owner only)
+- Mark task as completed
+- Filter tasks by status
 ```
 
 ```bash
@@ -65,6 +74,7 @@ blueprints generate api/tasks.md
 ✅ Logging
 ✅ Database transactions
 ✅ Authentication checks
+✅ 200+ lines of production FastAPI code
 ```
 
 ## 🏗️ How It Works - The Agentic Pipeline
@@ -189,19 +199,31 @@ blueprints generate api/users.md --language go
 ### **4. Design Pattern Implementation**
 ```markdown
 # patterns.repository
-Repository pattern for data access
 
-deps: @./models[User, Task]
+Repository pattern for data access layer.
 
-UserRepository:
-  pattern: repository
-  model: User
-  methods: standard_crud + [find_by_email, find_active]
+Dependencies: @./models/user, @./models/task, @./core/database
 
-TaskRepository:
-  pattern: repository  
-  model: Task
-  methods: standard_crud + [find_by_user, find_overdue]
+Requirements:
+- Implement repository pattern for data access
+- Separate business logic from data persistence
+- Support dependency injection
+- Include unit of work pattern
+- Async operations with SQLAlchemy
+
+User Repository:
+- Standard CRUD operations (create, read, update, delete)
+- Find user by email address
+- Find all active users
+- Soft delete support
+- Pagination for user lists
+
+Task Repository:
+- Standard CRUD operations
+- Find tasks by user ID
+- Find overdue tasks
+- Filter by status and priority
+- Bulk operations support
 ```
 
 Claude recognizes patterns and generates complete implementations with interfaces, dependency injection, and unit of work.
@@ -235,15 +257,31 @@ export ANTHROPIC_API_KEY="your-key"
 
 # 3. Create your first blueprint
 mkdir my-app && cd my-app
-echo '# main
-FastAPI app with async PostgreSQL
+cat > main.md << 'EOF'
+# main
 
-App features:
-- User authentication with JWT
-- CRUD operations for products  
+FastAPI e-commerce application with async PostgreSQL.
+
+Requirements:
+- User authentication with JWT tokens
+- Product catalog with categories
 - Shopping cart functionality
+- Order management system
 - Payment processing with Stripe
-' > main.md
+- Email notifications
+- Admin dashboard
+
+Database:
+- PostgreSQL with async SQLAlchemy
+- Redis for caching and sessions
+- Database migrations with Alembic
+
+Security:
+- JWT-based authentication
+- Role-based access control (RBAC)
+- Rate limiting on API endpoints
+- Input validation and sanitization
+EOF
 
 # 4. Generate your application
 blueprints generate-project .
