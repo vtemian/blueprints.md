@@ -1,44 +1,25 @@
 """
-FastAPI Application Module
+Main FastAPI application module.
 
-Main FastAPI application with middleware, routing, and comprehensive error handling.
-Provides a production-ready setup with CORS, logging, health checks, and API routing.
+This module contains the FastAPI application factory with middleware,
+routing, exception handling, and lifecycle management.
 """
 
 import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any, Dict
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import ValidationError
 
-# Import API routers
-try:
-    from api.users import router as users_router
-except ImportError as e:
-    logging.error(f"Failed to import users router: {e}")
-    users_router = None
-
-try:
-    from api.tasks import router as tasks_router
-except ImportError as e:
-    logging.error(f"Failed to import tasks router: {e}")
-    tasks_router = None
-
-# Import database utilities
-try:
-    from core.database import init_database, close_database, get_database_status
-except ImportError as e:
-    logging.error(f"Failed to import database utilities: {e}")
-    init_database = close_database = get_database_status = None
+from api import tasks, users
+from core import database
+from core.database import Base, engine
 
 # Configure logging
 logging.basicConfig(
@@ -47,123 +28,124 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Response Models
-class ErrorResponse(BaseModel):
-    """Standard error response model."""
-    error: str
-    message: str
-    request_id: str
-    timestamp: str
-    status_code: int
 
-class HealthResponse(BaseModel):
-    """Health check response model."""
-    status: str
-    timestamp: str
-    version: str
-    database: str
-    uptime_seconds: float
+# Custom Exception Classes
+class APIError(Exception):
+    """Base API exception class."""
+    
+    def __init__(self, message: str, status_code: int = 500):
+        self.message = message
+        self.status_code = status_code
+        super().__init__(self.message)
 
-class ValidationErrorResponse(BaseModel):
-    """Validation error response model."""
-    error: str
-    message: str
-    details: list[Dict[str, Any]]
-    request_id: str
-    timestamp: str
-    status_code: int
 
-# Application startup time for uptime calculation
-app_start_time = time.time()
+class DatabaseError(APIError):
+    """Database-related exception."""
+    
+    def __init__(self, message: str = "Database operation failed"):
+        super().__init__(message, status_code=503)
 
+
+class NotFoundError(APIError):
+    """Resource not found exception."""
+    
+    def __init__(self, message: str = "Resource not found"):
+        super().__init__(message, status_code=404)
+
+
+# Application Lifespan Management
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Application lifespan manager for startup and shutdown events.
+    Application lifespan context manager.
     
-    Handles database initialization and cleanup, along with other
-    resource management tasks.
+    Handles startup and shutdown events for the FastAPI application,
+    including database connection initialization and cleanup.
     """
     # Startup
-    logger.info("Starting FastAPI application...")
-    
+    logger.info("Starting up application...")
     try:
-        # Initialize database connection
-        if init_database:
-            await init_database()
-            logger.info("Database initialized successfully")
-        else:
-            logger.warning("Database initialization function not available")
-            
-        # Add any other startup tasks here
-        logger.info("Application startup completed")
+        # Initialize database tables
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created/verified")
+        
+        # Run any additional startup tasks here
+        logger.info("Application startup completed successfully")
         
     except Exception as e:
-        logger.error(f"Error during application startup: {e}")
+        logger.error(f"Failed to start application: {e}")
         raise
     
     yield
     
     # Shutdown
-    logger.info("Shutting down FastAPI application...")
-    
+    logger.info("Shutting down application...")
     try:
         # Close database connections
-        if close_database:
-            await close_database()
-            logger.info("Database connections closed")
-            
-        # Add any other cleanup tasks here
-        logger.info("Application shutdown completed")
+        engine.dispose()
+        logger.info("Database connections closed")
+        
+        # Run any additional cleanup tasks here
+        logger.info("Application shutdown completed successfully")
         
     except Exception as e:
         logger.error(f"Error during application shutdown: {e}")
 
-def create_application() -> FastAPI:
+
+def create_app() -> FastAPI:
     """
-    Create and configure the FastAPI application instance.
+    FastAPI application factory.
+    
+    Creates and configures the FastAPI application with middleware,
+    routing, exception handlers, and other settings.
     
     Returns:
         FastAPI: Configured FastAPI application instance
     """
     
-    # Initialize FastAPI application
+    # Create FastAPI instance with configuration
     app = FastAPI(
         title="Task Management API",
-        description="A comprehensive task management system with user authentication and task operations",
+        description="A comprehensive task management system with user authentication",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
-        openapi_url="/openapi.json",
         lifespan=lifespan
     )
     
-    # Configure CORS middleware
+    # Configure CORS Middleware (must be added first)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
             "http://localhost:3000",  # React development server
             "http://localhost:8080",  # Vue development server
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:8080",
-            # Add production origins here
+            "https://yourdomain.com",  # Production frontend
         ],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["*"],
     )
     
-    # Add custom logging middleware
+    # Custom Request/Response Logging Middleware
     @app.middleware("http")
-    async def logging_middleware(request: Request, call_next):
+    async def logging_middleware(request: Request, call_next) -> Response:
         """
-        Custom middleware for request/response logging and timing.
+        Log HTTP requests and responses with timing information.
+        
+        Args:
+            request: The incoming HTTP request
+            call_next: The next middleware or route handler
+            
+        Returns:
+            Response: The HTTP response
         """
-        # Generate unique request ID
+        # Generate unique request ID for tracing
         request_id = str(uuid.uuid4())
+        
+        # Add request ID to request state for use in handlers
         request.state.request_id = request_id
         
-        # Log request
+        # Log request details
         start_time = time.time()
         logger.info(
             f"Request started - ID: {request_id} | "
@@ -172,220 +154,212 @@ def create_application() -> FastAPI:
             f"Client: {request.client.host if request.client else 'unknown'}"
         )
         
-        # Process request
         try:
+            # Process request
             response = await call_next(request)
             
             # Calculate processing time
             process_time = time.time() - start_time
             
-            # Log response
+            # Add request ID to response headers
+            response.headers["X-Request-ID"] = request_id
+            
+            # Log response details
             logger.info(
                 f"Request completed - ID: {request_id} | "
                 f"Status: {response.status_code} | "
-                f"Duration: {process_time:.4f}s"
+                f"Time: {process_time:.4f}s"
             )
-            
-            # Add custom headers
-            response.headers["X-Request-ID"] = request_id
-            response.headers["X-Process-Time"] = str(process_time)
             
             return response
             
         except Exception as e:
+            # Calculate processing time for failed requests
             process_time = time.time() - start_time
+            
+            # Log error details
             logger.error(
                 f"Request failed - ID: {request_id} | "
                 f"Error: {str(e)} | "
-                f"Duration: {process_time:.4f}s"
+                f"Time: {process_time:.4f}s"
             )
+            
+            # Re-raise the exception to be handled by exception handlers
             raise
     
-    # Include API routers
-    if users_router:
-        app.include_router(
-            users_router,
-            prefix="/api/v1/users",
-            tags=["users"],
-            responses={
-                404: {"description": "User not found"},
-                422: {"description": "Validation error"}
-            }
-        )
-        logger.info("Users router included successfully")
-    else:
-        logger.warning("Users router not available - skipping inclusion")
-    
-    if tasks_router:
-        app.include_router(
-            tasks_router,
-            prefix="/api/v1/tasks",
-            tags=["tasks"],
-            responses={
-                404: {"description": "Task not found"},
-                422: {"description": "Validation error"}
-            }
-        )
-        logger.info("Tasks router included successfully")
-    else:
-        logger.warning("Tasks router not available - skipping inclusion")
-    
-    # Exception handlers
+    # Global Exception Handlers
     @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException):
-        """Handle HTTP exceptions with consistent error format."""
-        request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
-        
-        logger.warning(
-            f"HTTP Exception - ID: {request_id} | "
-            f"Status: {exc.status_code} | "
-            f"Detail: {exc.detail}"
-        )
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        """Handle HTTP exceptions with structured error response."""
+        request_id = getattr(request.state, "request_id", "unknown")
         
         return JSONResponse(
             status_code=exc.status_code,
-            content=ErrorResponse(
-                error="HTTP_ERROR",
-                message=str(exc.detail),
-                request_id=request_id,
-                timestamp=datetime.utcnow().isoformat(),
-                status_code=exc.status_code
-            ).dict()
+            content={
+                "error": {
+                    "type": "HTTPException",
+                    "message": exc.detail,
+                    "status_code": exc.status_code,
+                    "request_id": request_id,
+                }
+            }
         )
     
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        """Handle request validation errors with detailed information."""
-        request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
-        
-        logger.warning(
-            f"Validation Error - ID: {request_id} | "
-            f"Errors: {exc.errors()}"
-        )
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Handle request validation errors with detailed field information."""
+        request_id = getattr(request.state, "request_id", "unknown")
         
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=ValidationErrorResponse(
-                error="VALIDATION_ERROR",
-                message="Request validation failed",
-                details=exc.errors(),
-                request_id=request_id,
-                timestamp=datetime.utcnow().isoformat(),
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
-            ).dict()
+            content={
+                "error": {
+                    "type": "ValidationError",
+                    "message": "Request validation failed",
+                    "details": exc.errors(),
+                    "request_id": request_id,
+                }
+            }
         )
     
     @app.exception_handler(ValidationError)
-    async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
+    async def pydantic_validation_exception_handler(
+        request: Request, exc: ValidationError
+    ) -> JSONResponse:
         """Handle Pydantic validation errors."""
-        request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
-        
-        logger.warning(
-            f"Pydantic Validation Error - ID: {request_id} | "
-            f"Errors: {exc.errors()}"
-        )
+        request_id = getattr(request.state, "request_id", "unknown")
         
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=ValidationErrorResponse(
-                error="VALIDATION_ERROR",
-                message="Data validation failed",
-                details=exc.errors(),
-                request_id=request_id,
-                timestamp=datetime.utcnow().isoformat(),
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
-            ).dict()
+            content={
+                "error": {
+                    "type": "ValidationError",
+                    "message": "Data validation failed",
+                    "details": exc.errors(),
+                    "request_id": request_id,
+                }
+            }
+        )
+    
+    @app.exception_handler(APIError)
+    async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse:
+        """Handle custom API exceptions."""
+        request_id = getattr(request.state, "request_id", "unknown")
+        
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "type": exc.__class__.__name__,
+                    "message": exc.message,
+                    "status_code": exc.status_code,
+                    "request_id": request_id,
+                }
+            }
         )
     
     @app.exception_handler(Exception)
-    async def general_exception_handler(request: Request, exc: Exception):
-        """Handle unexpected exceptions."""
-        request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+    async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        """Handle unexpected exceptions with generic error response."""
+        request_id = getattr(request.state, "request_id", "unknown")
         
-        logger.error(
-            f"Unexpected Error - ID: {request_id} | "
-            f"Type: {type(exc).__name__} | "
-            f"Message: {str(exc)}",
-            exc_info=True
-        )
+        # Log the full exception for debugging
+        logger.exception(f"Unhandled exception for request {request_id}: {exc}")
         
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=ErrorResponse(
-                error="INTERNAL_SERVER_ERROR",
-                message="An unexpected error occurred",
-                request_id=request_id,
-                timestamp=datetime.utcnow().isoformat(),
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-            ).dict()
+            content={
+                "error": {
+                    "type": "InternalServerError",
+                    "message": "An unexpected error occurred",
+                    "request_id": request_id,
+                }
+            }
         )
     
-    # Health check endpoint
-    @app.get(
-        "/health",
-        response_model=HealthResponse,
-        tags=["health"],
-        summary="Health Check",
-        description="Check the health status of the application and its dependencies"
-    )
-    async def health_check():
+    # Health Check Endpoint
+    @app.get("/health", tags=["Health"])
+    async def health_check() -> Dict[str, Any]:
         """
-        Health check endpoint that returns application status and basic system information.
+        Health check endpoint that verifies application and database status.
         
         Returns:
-            HealthResponse: Current health status of the application
+            Dict containing health status information
         """
         try:
-            # Check database status
-            if get_database_status:
-                db_status = await get_database_status()
-            else:
-                db_status = "unavailable"
+            # Check database connectivity
+            db_status = await database.health_check()
             
-            # Calculate uptime
-            uptime = time.time() - app_start_time
-            
-            return HealthResponse(
-                status="healthy",
-                timestamp=datetime.utcnow().isoformat(),
-                version="1.0.0",
-                database=db_status,
-                uptime_seconds=round(uptime, 2)
-            )
+            return {
+                "status": "healthy",
+                "timestamp": time.time(),
+                "services": {
+                    "api": "healthy",
+                    "database": "healthy" if db_status else "unhealthy"
+                }
+            }
             
         except Exception as e:
             logger.error(f"Health check failed: {e}")
-            raise HTTPException(
+            
+            return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Service temporarily unavailable"
+                content={
+                    "status": "unhealthy",
+                    "timestamp": time.time(),
+                    "services": {
+                        "api": "healthy",
+                        "database": "unhealthy"
+                    },
+                    "error": str(e)
+                }
             )
     
-    # Root endpoint
-    @app.get(
-        "/",
-        tags=["root"],
-        summary="Root Endpoint",
-        description="Welcome message and API information"
+    # Include API Routers
+    app.include_router(
+        users.router,
+        prefix="/api/v1/users",
+        tags=["Users"]
     )
-    async def root():
-        """Root endpoint with basic API information."""
-        return {
-            "message": "Task Management API",
-            "version": "1.0.0",
-            "docs": "/docs",
-            "health": "/health"
-        }
     
-    logger.info("FastAPI application configured successfully")
+    app.include_router(
+        tasks.router,
+        prefix="/api/v1/tasks",
+        tags=["Tasks"]
+    )
+    
     return app
 
-# Create the application instance
-app = create_application()
 
-# Development server runner
+# Create the application instance
+app = create_app()
+
+
+# Root endpoint
+@app.get("/", tags=["Root"])
+async def root() -> Dict[str, str]:
+    """
+    Root endpoint providing basic API information.
+    
+    Returns:
+        Dict containing welcome message and API information
+    """
+    return {
+        "message": "Welcome to Task Management API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
 if __name__ == "__main__":
+    import uvicorn
+    
+    # Run the application with uvicorn for development
     uvicorn.run(
-        "main:app",
+        "app:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
