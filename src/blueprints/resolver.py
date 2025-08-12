@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional, Set
 from dataclasses import dataclass, field
 
+from .logging_config import get_logger
 from .parser import Blueprint, BlueprintReference, BlueprintParser
 
 
@@ -14,6 +15,12 @@ class ResolvedBlueprint:
     dependencies: List[Blueprint]
     generation_order: List[Blueprint] = field(default=None)
     
+    # Additional metadata from agentic resolver (optional)
+    complexity_scores: dict = field(default_factory=dict)
+    coupling_analysis: dict = field(default_factory=dict) 
+    circular_dependencies: list = field(default_factory=list)
+    resolution_strategies: list = field(default_factory=list)
+    
     def __post_init__(self):
         # If generation_order is not provided, create a simple order
         if self.generation_order is None:
@@ -21,7 +28,12 @@ class ResolvedBlueprint:
 
 
 class BlueprintResolver:
-    """Simple, fast dependency resolver for blueprint files."""
+    """Legacy algorithmic dependency resolver for blueprint files.
+    
+    ⚠️  DEPRECATED: This resolver uses simple file-system traversal.
+    Use create_smart_resolver() for Claude-powered semantic resolution.
+    Only kept for backward compatibility and testing.
+    """
 
     def __init__(self, project_root: Optional[Path] = None):
         self.project_root = project_root or Path.cwd()
@@ -29,8 +41,18 @@ class BlueprintResolver:
 
     def resolve(self, blueprint_path: Path) -> ResolvedBlueprint:
         """Resolve blueprint dependencies using simple depth-first discovery."""
+        logger = get_logger('resolver')
+        logger.info(f"Resolving dependencies for: {blueprint_path.name}")
+        
         main_blueprint = self.parser.parse_file(blueprint_path)
+        logger.debug(f"Main module: {main_blueprint.module_name}")
+        logger.debug(f"Blueprint references: {len(main_blueprint.blueprint_refs)}")
+        
         dependencies = self._resolve_dependencies(main_blueprint, set())
+        
+        logger.info(f"Resolved {len(dependencies)} dependencies")
+        for dep_name in dependencies.keys():
+            logger.debug(f"  - {dep_name}")
         
         return ResolvedBlueprint(
             main=main_blueprint,
@@ -41,11 +63,14 @@ class BlueprintResolver:
         self, blueprint: Blueprint, visited: Set[str]
     ) -> dict[str, Blueprint]:
         """Recursively discover dependencies depth-first."""
+        logger = get_logger('resolver')
         dependencies = {}
         
         if blueprint.module_name in visited:
+            logger.debug(f"Already visited: {blueprint.module_name}")
             return dependencies
             
+        logger.debug(f"Processing dependencies for: {blueprint.module_name}")
         visited.add(blueprint.module_name)
         
         for ref in blueprint.blueprint_refs:
@@ -177,3 +202,22 @@ class BlueprintResolver:
                 dependencies.append(dep_blueprint)
         
         return dependencies
+
+
+# Smart resolver that uses Claude for semantic understanding
+def create_smart_resolver(project_root: Optional[Path] = None):
+    """Create a smart dependency resolver using Claude.
+    
+    Pure Claude system - requires ANTHROPIC_API_KEY.
+    """
+    logger = get_logger('resolver')
+    logger.debug(f"Creating smart resolver for project root: {project_root}")
+    
+    try:
+        from .agentic_resolver import AgenticDependencyResolver
+        resolver = AgenticDependencyResolver(project_root)
+        logger.debug("Smart resolver created successfully")
+        return resolver
+    except Exception as e:
+        logger.error(f"Failed to create smart resolver: {e}")
+        raise

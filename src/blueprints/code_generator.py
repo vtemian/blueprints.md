@@ -1,17 +1,19 @@
 """Core code generation functionality using Claude API."""
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .parser import Blueprint
-from .resolver import BlueprintResolver, ResolvedBlueprint
-from .prompt_builder import PromptBuilder
-from .config import config as default_config
+from anthropic import Anthropic
 
-try:
-    from anthropic import Anthropic
-except ImportError:
-    Anthropic = None
+from .logging_config import get_logger
+from .parser import Blueprint
+from .resolver import ResolvedBlueprint, create_smart_resolver
+from .adaptive_prompt_generator import AdaptivePromptBuilder
+from .intelligent_context_curator import SmartContextBuilder
+from .iterative_quality_improver import QualityEnhancedCodeGenerator
+from .config import config as default_config
+from .verifier import CodeVerifier
 
 
 class CodeGenerator:
@@ -19,20 +21,28 @@ class CodeGenerator:
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         """Initialize with API key and model configuration."""
+        logger = get_logger('generator')
+        
         if Anthropic is None:
             raise ImportError("anthropic package is required for code generation. Install with: pip install anthropic")
             
         self.api_key = api_key or default_config.get_api_key()
+        logger.debug(f"API key provided: {'Yes' if self.api_key else 'No'}")
+        
         if not self.api_key:
+            logger.error("No API key found in environment or parameters")
             raise ValueError(
                 "Anthropic API key not provided. Set ANTHROPIC_API_KEY environment variable or pass api_key parameter."
             )
 
+        logger.debug("Initializing Anthropic client...")
         self.client = Anthropic(api_key=self.api_key)
+        logger.debug("Anthropic client initialized successfully")
         self.model = model or default_config.default_model
         self.max_tokens = default_config.max_tokens
         self.temperature = default_config.temperature
-        self.prompt_builder = PromptBuilder()
+        self.prompt_builder = AdaptivePromptBuilder()
+        self.context_builder = SmartContextBuilder()
 
     def generate_single_blueprint(
         self,
@@ -42,6 +52,12 @@ class CodeGenerator:
         dependency_versions: Optional[Dict[str, str]] = None,
     ) -> str:
         """Generate code for a single blueprint with context."""
+        logger = get_logger('generator')
+        logger.info(f"Generating {language} code for: {blueprint.module_name}")
+        logger.debug(f"Context parts: {len(context_parts)}")
+        if dependency_versions:
+            logger.debug(f"Dependencies: {list(dependency_versions.keys())}")
+        
         prompt = self.prompt_builder.build_single_blueprint_prompt(
             blueprint, language, context_parts, dependency_versions
         )
@@ -55,6 +71,12 @@ class CodeGenerator:
         dependency_versions: Optional[Dict[str, str]] = None,
     ) -> str:
         """Generate code from a natural language blueprint."""
+        logger = get_logger('generator')
+        logger.info(f"Generating {language} code from natural blueprint: {blueprint.module_name}")
+        logger.debug(f"Context parts: {len(context_parts)}")
+        if dependency_versions:
+            logger.debug(f"Dependencies: {list(dependency_versions.keys())}")
+        
         prompt = self.prompt_builder.build_natural_blueprint_prompt(
             blueprint, language, context_parts, dependency_versions
         )
@@ -70,7 +92,6 @@ class CodeGenerator:
         main_md_path: Optional[Path] = None,
     ) -> Tuple[str, List]:
         """Generate code with simple verification (no retries)."""
-        from .verifier import CodeVerifier
 
         if project_root is None and blueprint.file_path:
             project_root = blueprint.file_path.parent
@@ -78,7 +99,7 @@ class CodeGenerator:
         # Extract dependency versions if available
         dependency_versions = {}
         if main_md_path and main_md_path.exists():
-            dependency_versions = self._extract_dependency_versions(main_md_path)
+            dependency_versions = self.extract_dependency_versions(main_md_path)
 
         # Generate code once
         code = self.generate_single_blueprint(
@@ -89,6 +110,11 @@ class CodeGenerator:
         verifier = CodeVerifier(project_root)
         results = verifier.verify_all(code, blueprint)
 
+        # Record result for adaptive prompt learning
+        success = all(result.success for result in results)
+        verification_errors = [result.error_message for result in results if not result.success and result.error_message]
+        self.prompt_builder.record_generation_result(blueprint, language, success, verification_errors)
+
         return code, results
 
     def create_blueprint_context(
@@ -98,63 +124,14 @@ class CodeGenerator:
         generated_context: Dict[str, str],
         language: str,
     ) -> List[str]:
-        """Create context for blueprint generation including dependencies."""
-        resolver = BlueprintResolver()
-        dependencies = resolver.get_dependencies_for_blueprint(blueprint, resolved)
-
-        if not dependencies:
-            return [f"Generate {language} code from this blueprint:", ""]
-
-        context_parts = ["You have access to the following dependency modules:", ""]
-
-        for dep in dependencies:
-            if dep.module_name in generated_context:
-                context_parts.extend([
-                    f"=== Module: {dep.module_name} ===",
-                    "Blueprint:",
-                    dep.raw_content.strip(),
-                    "",
-                    "Generated code:",
-                    generated_context[dep.module_name],
-                    "",
-                ])
-
-        context_parts.extend([
-            "=== END OF DEPENDENCIES ===",
-            "",
-            f"Now generate {language} code for the following blueprint:",
-            "",
-        ])
-
-        return context_parts
+        """Create intelligently curated context for blueprint generation."""
+        return self.context_builder.create_blueprint_context(
+            blueprint, resolved, generated_context, language
+        )
 
     def create_comprehensive_context(self, resolved: ResolvedBlueprint, language: str) -> List[str]:
-        """Create comprehensive context with all dependencies as context."""
-        context_parts = []
-
-        if resolved.dependencies:
-            context_parts.extend([
-                "You have access to the following blueprint dependencies:",
-                "",
-            ])
-
-            for dep in resolved.dependencies:
-                context_parts.extend([
-                    f"=== Blueprint: {dep.module_name} ===",
-                    dep.raw_content.strip(),
-                    "",
-                ])
-
-            context_parts.extend([
-                "=== END OF DEPENDENCIES ===",
-                "",
-                f"Now generate {language} code for the following blueprint, using the above blueprints as context:",
-                "",
-            ])
-        else:
-            context_parts.extend([f"Generate {language} code from this blueprint:", ""])
-
-        return context_parts
+        """Create intelligently curated comprehensive context."""
+        return self.context_builder.create_comprehensive_context(resolved, language)
 
     def extract_dependency_versions(self, main_md_path: Path) -> Dict[str, str]:
         """Extract dependency names and versions from main.md."""
@@ -164,7 +141,6 @@ class CodeGenerator:
         dependency_versions = {}
         content = main_md_path.read_text()
 
-        import re
 
         in_deps_section = False
 
@@ -240,15 +216,33 @@ class CodeGenerator:
 
     def _call_claude_api(self, prompt: str) -> str:
         """Make API call to Claude and extract clean code."""
+        logger = get_logger('generator')
+        
+        # Validate API key is available
+        if not self.api_key:
+            logger.error("No API key available for Claude API call")
+            raise RuntimeError("No API key provided for code generation")
+        
         try:
+            logger.debug(f"Making API call to {self.model} (prompt: {len(prompt)} chars)")
+            logger.debug(f"Using API key: {'*' * (len(self.api_key) - 8) + self.api_key[-8:] if len(self.api_key) > 8 else '***'}")
+            
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return self._extract_code_from_response(response.content[0].text)
+            
+            logger.debug(f"Received response ({len(response.content[0].text)} chars)")
+            code = self._extract_code_from_response(response.content[0].text)
+            logger.info(f"Successfully generated {len(code)} characters of code")
+            return code
+            
         except Exception as e:
+            logger.error(f"API call failed: {type(e).__name__}: {str(e)}")
+            if "api_key" in str(e).lower() or "unauthorized" in str(e).lower():
+                logger.error("This appears to be an API key issue. Please check your ANTHROPIC_API_KEY.")
             raise RuntimeError(f"Failed to generate code: {str(e)}")
 
     def _extract_code_from_response(self, response: str) -> str:
@@ -306,3 +300,5 @@ class NaturalCodeGenerator(CodeGenerator):
             return super().generate_single_blueprint(
                 blueprint, context_parts, language, dependency_versions
             )
+
+

@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
+from .logging_config import get_logger
+from .utils import check_anthropic_api_key
+
 
 @dataclass
 class Method:
@@ -57,32 +60,63 @@ class BlueprintParser:
     """Claude-powered blueprint parser for intelligent understanding of natural language blueprints."""
     
     def __init__(self):
-        # Require ANTHROPIC_API_KEY
-        if not os.getenv('ANTHROPIC_API_KEY'):
-            raise ValueError(
-                "ANTHROPIC_API_KEY environment variable is required for blueprint parsing. "
-                "Set it with: export ANTHROPIC_API_KEY=your_key_here"
-            )
+        logger = get_logger('parser')
+        logger.debug("Initializing BlueprintParser...")
+        
+        logger.debug("Checking API key...")
+        check_anthropic_api_key("blueprint parsing")
+        logger.debug("API key validation passed")
         
         try:
+            logger.debug("Importing ClaudeBlueprintParser...")
             from .claude_parser import ClaudeBlueprintParser
+            logger.debug("Creating ClaudeBlueprintParser instance...")
             self.claude_parser = ClaudeBlueprintParser()
-        except ImportError:
+            logger.debug("ClaudeBlueprintParser initialized successfully")
+        except ImportError as e:
+            logger.error(f"Import error: {e}")
             raise ImportError(
                 "anthropic package is required for blueprint parsing. "
                 "Install it with: pip install anthropic"
             )
+        except Exception as e:
+            logger.error(f"Unexpected error initializing parser: {e}")
+            raise
     
     def parse_file(self, file_path: Path) -> Blueprint:
         """Parse a blueprint file using Claude."""
-        content = file_path.read_text()
-        blueprint = self.parse_content(content)
-        blueprint.file_path = file_path
-        return blueprint
+        logger = get_logger('parser')
+        logger.info(f"Parsing blueprint file: {file_path}")
+        logger.debug(f"File exists: {file_path.exists()}")
+        
+        try:
+            logger.debug(f"Reading file content...")
+            content = file_path.read_text()
+            logger.debug(f"File content length: {len(content)} characters")
+            
+            logger.debug("Calling parse_content...")
+            blueprint = self.parse_content(content)
+            blueprint.file_path = file_path
+            
+            logger.info(f"Successfully parsed blueprint: {blueprint.module_name}")
+            logger.debug(f"Blueprint has {len(blueprint.blueprint_refs)} references")
+            return blueprint
+        except Exception as e:
+            logger.error(f"Failed to parse file {file_path}: {e}")
+            raise
     
     def parse_content(self, content: str) -> Blueprint:
         """Parse blueprint content using Claude intelligence."""
-        return self.claude_parser.parse_content(content)
+        logger = get_logger('parser')
+        logger.debug(f"Parsing content ({len(content)} chars)...")
+        
+        try:
+            result = self.claude_parser.parse_content(content)
+            logger.debug(f"Content parsed successfully, module: {result.module_name}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to parse content: {e}")
+            raise
 
 
 # Legacy aliases for backward compatibility

@@ -6,17 +6,19 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
+from .constants import DEFAULT_MODEL, DEFAULT_MAX_TOKENS
+
 
 class BlueprintsConfig(BaseSettings):
     """Configuration settings for blueprints.md."""
 
     # API Configuration
     anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
-    default_model: str = Field("claude-sonnet-4-20250514", env="BLUEPRINTS_MODEL")
+    default_model: str = Field(DEFAULT_MODEL, env="BLUEPRINTS_MODEL")
 
     # Generation Settings
     default_language: str = Field("python", env="BLUEPRINTS_LANGUAGE")
-    max_tokens: int = Field(4000, env="BLUEPRINTS_MAX_TOKENS")
+    max_tokens: int = Field(DEFAULT_MAX_TOKENS, env="BLUEPRINTS_MAX_TOKENS")
     temperature: float = Field(0.0, env="BLUEPRINTS_TEMPERATURE")
 
     # File Settings

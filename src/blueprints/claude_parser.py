@@ -2,53 +2,40 @@
 
 import json
 import re
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
+from anthropic import Anthropic
+
 # Import the existing data structures
 from .parser import Blueprint, BlueprintReference, Method, Component
+from .constants import DEFAULT_MODEL
+from .logging_config import get_logger
+from .utils import load_blueprint_spec, check_anthropic_api_key
 
 
 class ClaudeBlueprintParser:
     """Claude-powered blueprint parser using BLUEPRINTS_SPEC.md as context."""
 
     def __init__(self):
-        # Require ANTHROPIC_API_KEY
-        if not os.getenv('ANTHROPIC_API_KEY'):
-            raise ValueError(
-                "ANTHROPIC_API_KEY environment variable is required for Claude-based parsing. "
-                "Set it with: export ANTHROPIC_API_KEY=your_key_here"
-            )
+        logger = get_logger('claude_parser')
+        logger.debug("Initializing ClaudeBlueprintParser...")
         
-        try:
-            from anthropic import Anthropic
-            self.client = Anthropic()
-        except ImportError:
-            raise ImportError(
-                "anthropic package is required for Claude-based parsing. "
-                "Install it with: pip install anthropic"
-            )
+        logger.debug("Checking API key...")
+        check_anthropic_api_key("Claude-based parsing")
+        logger.debug("API key check passed")
         
-        # Load blueprint specification for context
-        self._load_blueprint_spec()
+        logger.debug("Creating Anthropic client...")
+        self.client = Anthropic()
+        logger.debug("Anthropic client created")
+        
+        logger.debug("Loading blueprint specification...")
+        self.blueprint_spec = load_blueprint_spec()
+        logger.debug(f"Blueprint spec loaded ({len(self.blueprint_spec)} chars)")
+        
+        logger.debug("ClaudeBlueprintParser initialization complete")
     
-    def _load_blueprint_spec(self):
-        """Load BLUEPRINTS_SPEC.md for parsing context."""
-        spec_path = Path(__file__).parent.parent.parent / "BLUEPRINTS_SPEC.md"
-        if spec_path.exists():
-            self.blueprint_spec = spec_path.read_text()
-        else:
-            # Fallback minimal spec
-            self.blueprint_spec = """
-Blueprint files use natural language format:
-- Start with # [module.name]  
-- Description of what the module does
-- Dependencies: [list of dependencies and @blueprint/references]
-- Requirements: [list of requirements]
-- Additional sections as needed
-"""
 
     def parse_file(self, file_path: Path) -> Blueprint:
         """Parse a blueprint file using Claude."""
@@ -59,11 +46,24 @@ Blueprint files use natural language format:
 
     def parse_content(self, content: str) -> Blueprint:
         """Parse blueprint content using Claude."""
+        logger = get_logger('claude_parser')
+        logger.debug(f"Starting Claude parsing of {len(content)} character content")
+        
+        logger.debug("Calling Claude API for parsing...")
         parsed_data = self._parse_with_claude(content)
-        return self._convert_to_blueprint(parsed_data, content)
+        logger.debug(f"Claude API returned data: {type(parsed_data)}")
+        
+        logger.debug("Converting parsed data to Blueprint object...")
+        blueprint = self._convert_to_blueprint(parsed_data, content)
+        logger.debug(f"Blueprint object created: {blueprint.module_name}")
+        
+        return blueprint
 
     def _parse_with_claude(self, content: str) -> dict:
         """Use Claude to parse blueprint content."""
+        logger = get_logger('claude_parser')
+        logger.debug("Building parsing prompt...")
+        
         parsing_prompt = f"""
 BLUEPRINT SPECIFICATION:
 {self.blueprint_spec}
@@ -119,19 +119,26 @@ PARSING RULES:
 Return ONLY the JSON, no explanations.
 """
         
+        logger.debug(f"Making Claude API call (prompt: {len(parsing_prompt)} chars)...")
         response = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=DEFAULT_MODEL,
             max_tokens=2000,
             messages=[{"role": "user", "content": parsing_prompt}]
         )
+        logger.debug(f"Claude API response received ({len(response.content[0].text)} chars)")
         
         response_text = response.content[0].text
+        logger.debug("Extracting JSON from Claude response...")
         
         # Extract JSON from response
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group())
+            logger.debug("JSON pattern found, parsing...")
+            parsed_json = json.loads(json_match.group())
+            logger.debug(f"JSON parsed successfully: {list(parsed_json.keys())}")
+            return parsed_json
         else:
+            logger.error(f"Could not extract JSON from response: {response_text[:200]}...")
             raise ValueError("Could not extract JSON from Claude response")
 
     def _convert_to_blueprint(self, parsed_data: dict, raw_content: str) -> Blueprint:
@@ -175,6 +182,4 @@ Return ONLY the JSON, no explanations.
 
 
 # Legacy compatibility - keep the same interface
-class BlueprintParser(ClaudeBlueprintParser):
-    """Backward compatible parser interface."""
-    pass
+BlueprintParser = ClaudeBlueprintParser

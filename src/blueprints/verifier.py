@@ -6,6 +6,12 @@ import json
 import re
 import os
 
+from anthropic import Anthropic
+
+from .constants import DEFAULT_MODEL
+from .logging_config import get_logger
+from .utils import check_anthropic_api_key
+
 
 @dataclass
 class VerificationResult:
@@ -25,27 +31,20 @@ class CodeVerifier:
         self._verification_cache = {}
         
         # Require ANTHROPIC_API_KEY
-        if not os.getenv('ANTHROPIC_API_KEY'):
-            raise ValueError(
-                "ANTHROPIC_API_KEY environment variable is required for code verification. "
-                "Set it with: export ANTHROPIC_API_KEY=your_key_here"
-            )
+        check_anthropic_api_key("code verification")
         
-        try:
-            from anthropic import Anthropic
-            self.client = Anthropic()
-        except ImportError:
-            raise ImportError(
-                "anthropic package is required for code verification. "
-                "Install it with: pip install anthropic"
-            )
+        
+        self.client = Anthropic()
 
     def verify_syntax(self, code: str) -> VerificationResult:
         """Check if code has valid Python syntax"""
+        logger = get_logger('verifier')
         try:
             ast.parse(code)
+            logger.debug(f"Syntax validation passed ({len(code)} characters)")
             return VerificationResult(success=True)
         except SyntaxError as e:
+            logger.debug(f"Syntax error at line {e.lineno}: {str(e)}")
             return VerificationResult(
                 success=False,
                 error_type="syntax",
@@ -96,23 +95,39 @@ class CodeVerifier:
 
     def verify_all(self, code: str, blueprint: Optional["Blueprint"] = None) -> List[VerificationResult]:
         """Run all essential verifications"""
+        logger = get_logger('verifier')
+        logger.info("Starting code verification...")
         results = []
 
         # Always check syntax first
+        logger.debug("Checking syntax...")
         syntax_result = self.verify_syntax(code)
         results.append(syntax_result)
         if not syntax_result.success:
+            logger.warning(f"Syntax error found: {syntax_result.error_message}")
             return results
+        logger.debug("✓ Syntax check passed")
 
         # Check imports
+        logger.debug("Checking imports...")
         import_result = self.verify_imports(code)
         results.append(import_result)
+        if import_result.success:
+            logger.debug("✓ Import check passed")
+        else:
+            logger.warning(f"Import issues found: {len(import_result.suggestions)} suggestions")
 
         # Check blueprint requirements if provided
         if blueprint:
+            logger.debug(f"Checking blueprint requirements for: {blueprint.module_name}")
             blueprint_result = self.verify_blueprint_requirements(code, blueprint)
             results.append(blueprint_result)
+            if blueprint_result.success:
+                logger.debug("✓ Blueprint requirements check passed")
+            else:
+                logger.warning(f"Blueprint requirements not met: {blueprint_result.error_message}")
 
+        logger.info(f"Verification completed: {sum(1 for r in results if r.success)}/{len(results)} checks passed")
         return results
 
     def _generate_verification_prompt(self, blueprint: "Blueprint") -> str:
@@ -145,7 +160,7 @@ Keep it practical and verifiable from code inspection.
         
         try:
             response = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=DEFAULT_MODEL,
                 max_tokens=1000,
                 messages=[{"role": "user", "content": prompt_generation}]
             )
@@ -188,7 +203,7 @@ Be practical - minor style issues don't matter, focus on functional completeness
         
         try:
             response = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=DEFAULT_MODEL,
                 max_tokens=1000,
                 messages=[{"role": "user", "content": verification_request}]
             )
@@ -265,7 +280,7 @@ Be thorough and check all used functions, classes, and modules.
         
         try:
             response = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=DEFAULT_MODEL,
                 max_tokens=1000,
                 messages=[{"role": "user", "content": import_request}]
             )

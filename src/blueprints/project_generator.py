@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import click
 
+from .logging_config import get_logger
 from .parser import Blueprint
 from .resolver import ResolvedBlueprint
 from .code_generator import CodeGenerator
@@ -26,13 +27,22 @@ class ProjectGenerator:
         verify: bool = True,
     ) -> Dict[str, Path]:
         """Generate code for all blueprints in dependency order."""
+        logger = get_logger('project')
+        logger.info(f"Starting project generation ({len(resolved.generation_order)} files)")
+        logger.debug(f"Output directory: {output_dir}")
+        logger.debug(f"Target language: {language}")
+        logger.debug(f"Verification enabled: {verify}")
+        
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        dependency_versions = self._extract_dependency_versions_safe(main_md_path)
+        dependency_versions = {}
+        if main_md_path and main_md_path.exists():
+            dependency_versions = self.code_generator.extract_dependency_versions(main_md_path)
         generated_files = {}
         generated_context = {}
 
-        for blueprint in resolved.generation_order:
+        for i, blueprint in enumerate(resolved.generation_order, 1):
+            logger.info(f"[{i}/{len(resolved.generation_order)}] Processing {blueprint.module_name}")
             try:
                 code, output_path = self._generate_single_blueprint_file(
                     blueprint,
@@ -47,7 +57,9 @@ class ProjectGenerator:
                 )
                 generated_files[blueprint.module_name] = output_path
                 generated_context[blueprint.module_name] = code
+                logger.info(f"✓ Generated {blueprint.module_name} -> {output_path}")
             except Exception as e:
+                logger.error(f"Failed to generate {blueprint.module_name}: {str(e)}")
                 raise RuntimeError(
                     f"Failed to generate code for {blueprint.module_name}: {str(e)}"
                 )

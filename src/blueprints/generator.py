@@ -6,6 +6,7 @@ This module provides backward compatibility by delegating to the new focused mod
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+from .logging_config import get_logger
 from .parser import Blueprint
 from .resolver import ResolvedBlueprint
 from .code_generator import CodeGenerator as CoreCodeGenerator
@@ -20,8 +21,18 @@ class CodeGenerator:
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         """Initialize the code generator with focused modules."""
+        logger = get_logger('generator')
+        logger.debug(f"Initializing CodeGenerator wrapper (api_key: {'provided' if api_key else 'none'}, model: {model or 'default'})")
+        
+        logger.debug("Creating core generator...")
         self.core_generator = CoreCodeGenerator(api_key=api_key, model=model)
+        logger.debug("Core generator created")
+        
+        logger.debug("Creating project generator...")
         self.project_generator = ProjectGenerator(self.core_generator)
+        logger.debug("Project generator created")
+        
+        logger.debug("CodeGenerator wrapper initialization complete")
 
     def _format_component_for_prompt(self, component):
         """Delegate to prompt builder for component formatting."""
@@ -41,9 +52,16 @@ class CodeGenerator:
         verify: bool = True,
     ) -> Dict[str, Path]:
         """Generate code for all blueprints in dependency order."""
-        return self.project_generator.generate_project(
+        logger = get_logger('generator')
+        logger.debug(f"Starting project generation: {len(resolved.generation_order)} blueprints")
+        logger.debug(f"Output dir: {output_dir}, Language: {language}, Force: {force}, Verify: {verify}")
+        
+        result = self.project_generator.generate_project(
             resolved, output_dir, language, force, main_md_path, verify
         )
+        
+        logger.debug(f"Project generation completed: {len(result)} files generated")
+        return result
 
     # Backward compatibility properties
     @property
