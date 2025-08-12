@@ -1,44 +1,46 @@
 """
 Database connection and session management module.
 
-This module provides database connectivity, session management, and utilities
-for FastAPI applications using SQLAlchemy with async support.
+This module provides database connectivity, session management, health checks,
+and Alembic integration for FastAPI applications.
 """
 
-import asyncio
 import logging
 import os
-import time
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
-from urllib.parse import urlparse
+from contextlib import contextmanager
+from typing import Generator, Optional, Tuple, Any, Dict
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event, pool
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import QueuePool, StaticPool
+from sqlalchemy.exc import SQLAlchemyError, DisconnectionError
+from sqlalchemy.orm import sessionmaker, Session, declarative_base
+from sqlalchemy.pool import QueuePool
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Database configuration constants
 DEFAULT_DATABASE_URL = "sqlite:///./app.db"
-DEFAULT_ASYNC_DATABASE_URL = "sqlite+aiosqlite:///./app.db"
 DEFAULT_POOL_SIZE = 10
 DEFAULT_MAX_OVERFLOW = 20
 DEFAULT_POOL_TIMEOUT = 30
-DEFAULT_POOL_RECYCLE = 3600
-DEFAULT_CONNECTION_TIMEOUT = 30
-MAX_RETRY_ATTEMPTS = 3
-RETRY_BACKOFF_FACTOR = 2
+DEFAULT_POOL_RECYCLE = 3600  # 1 hour
+HEALTH_CHECK_TIMEOUT = 5
 
 # Create declarative base for models
 Base = declarative_base()
+
+
+class DatabaseError(Exception):
+    """Custom database exception."""
+    pass
+
+
+class DatabaseConnectionError(DatabaseError):
+    """Database connection specific exception."""
+    pass
 
 
 class DatabaseConfig:
@@ -46,362 +48,404 @@ class DatabaseConfig:
     
     def __init__(self):
         self.database_url = self._get_database_url()
-        self.async_database_url = self._get_async_database_url()
         self.pool_size = int(os.getenv("DB_POOL_SIZE", DEFAULT_POOL_SIZE))
         self.max_overflow = int(os.getenv("DB_MAX_OVERFLOW", DEFAULT_MAX_OVERFLOW))
         self.pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", DEFAULT_POOL_TIMEOUT))
         self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", DEFAULT_POOL_RECYCLE))
-        self.connection_timeout = int(os.getenv("DB_CONNECTION_TIMEOUT", DEFAULT_CONNECTION_TIMEOUT))
         self.echo = os.getenv("DB_ECHO", "false").lower() == "true"
         
     def _get_database_url(self) -> str:
         """Get database URL from environment with validation."""
-        url = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
-        if not self._validate_database_url(url):
-            logger.warning(f"Invalid DATABASE_URL format, using default: {DEFAULT_DATABASE_URL}")
-            return DEFAULT_DATABASE_URL
-        return url
-    
-    def _get_async_database_url(self) -> str:
-        """Get async database URL from environment or convert sync URL."""
-        async_url = os.getenv("ASYNC_DATABASE_URL")
-        if async_url:
-            return async_url
+        database_url = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+        
+        if not database_url:
+            raise ValueError("DATABASE_URL environment variable is required")
             
-        # Convert sync URL to async URL
-        sync_url = self.database_url
-        if sync_url.startswith("postgresql://"):
-            return sync_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        elif sync_url.startswith("mysql://"):
-            return sync_url.replace("mysql://", "mysql+aiomysql://", 1)
-        elif sync_url.startswith("sqlite:///"):
-            return sync_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
-        else:
-            return DEFAULT_ASYNC_DATABASE_URL
+        # Handle Heroku postgres URL format
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+            
+        return database_url
     
-    def _validate_database_url(self, url: str) -> bool:
-        """Validate database URL format."""
-        try:
-            parsed = urlparse(url)
-            return bool(parsed.scheme and (parsed.path or parsed.netloc))
-        except Exception as e:
-            logger.error(f"Error validating database URL: {e}")
-            return False
+    def get_engine_kwargs(self) -> Dict[str, Any]:
+        """Get SQLAlchemy engine configuration."""
+        kwargs = {
+            "echo": self.echo,
+            "future": True,  # Use SQLAlchemy 2.0 style
+        }
+        
+        # Only add pooling config for non-SQLite databases
+        if not self.database_url.startswith("sqlite"):
+            kwargs.update({
+                "poolclass": QueuePool,
+                "pool_size": self.pool_size,
+                "max_overflow": self.max_overflow,
+                "pool_timeout": self.pool_timeout,
+                "pool_recycle": self.pool_recycle,
+                "pool_pre_ping": True,  # Validate connections before use
+            })
+        else:
+            # SQLite specific configuration
+            kwargs.update({
+                "connect_args": {"check_same_thread": False},
+                "poolclass": pool.StaticPool,
+            })
+            
+        return kwargs
+
+
+# Global configuration instance
+config = DatabaseConfig()
+
+# Create database engine
+engine: Engine = create_engine(config.database_url, **config.get_engine_kwargs())
+
+# Create session factory
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
+
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Set SQLite pragmas for better performance and reliability."""
+    if config.database_url.startswith("sqlite"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=memory")
+        cursor.execute("PRAGMA mmap_size=268435456")  # 256MB
+        cursor.close()
+
+
+@event.listens_for(engine, "checkout")
+def receive_checkout(dbapi_connection, connection_record, connection_proxy):
+    """Handle connection checkout events."""
+    logger.debug("Connection checked out from pool")
+
+
+@event.listens_for(engine, "checkin")
+def receive_checkin(dbapi_connection, connection_record):
+    """Handle connection checkin events."""
+    logger.debug("Connection returned to pool")
 
 
 class DatabaseManager:
     """Database manager for handling connections and sessions."""
     
-    def __init__(self, config: Optional[DatabaseConfig] = None):
-        self.config = config or DatabaseConfig()
-        self._engine: Optional[Engine] = None
-        self._async_engine: Optional[AsyncEngine] = None
-        self._session_factory: Optional[sessionmaker] = None
-        self._async_session_factory: Optional[sessionmaker] = None
+    def __init__(self, engine: Engine):
+        self.engine = engine
+        self._session_factory = SessionLocal
+    
+    @contextmanager
+    def get_session(self) -> Generator[Session, None, None]:
+        """
+        Context manager for database sessions with automatic cleanup.
         
-    @property
-    def engine(self) -> Engine:
-        """Get or create synchronous database engine."""
-        if self._engine is None:
-            self._engine = self._create_engine()
-        return self._engine
-    
-    @property
-    def async_engine(self) -> AsyncEngine:
-        """Get or create asynchronous database engine."""
-        if self._async_engine is None:
-            self._async_engine = self._create_async_engine()
-        return self._async_engine
-    
-    @property
-    def session_factory(self) -> sessionmaker:
-        """Get or create session factory."""
-        if self._session_factory is None:
-            self._session_factory = sessionmaker(
-                bind=self.engine,
-                autocommit=False,
-                autoflush=False,
-                expire_on_commit=False
-            )
-        return self._session_factory
-    
-    @property
-    def async_session_factory(self) -> sessionmaker:
-        """Get or create async session factory."""
-        if self._async_session_factory is None:
-            self._async_session_factory = sessionmaker(
-                bind=self.async_engine,
-                class_=AsyncSession,
-                autocommit=False,
-                autoflush=False,
-                expire_on_commit=False
-            )
-        return self._async_session_factory
-    
-    def _create_engine(self) -> Engine:
-        """Create synchronous database engine with connection pooling."""
-        engine_kwargs = {
-            "echo": self.config.echo,
-            "pool_pre_ping": True,
-            "pool_recycle": self.config.pool_recycle,
-            "connect_args": {"timeout": self.config.connection_timeout}
-        }
-        
-        # Configure pooling based on database type
-        if self.config.database_url.startswith("sqlite"):
-            engine_kwargs.update({
-                "poolclass": StaticPool,
-                "connect_args": {
-                    "check_same_thread": False,
-                    "timeout": self.config.connection_timeout
-                }
-            })
-        else:
-            engine_kwargs.update({
-                "poolclass": QueuePool,
-                "pool_size": self.config.pool_size,
-                "max_overflow": self.config.max_overflow,
-                "pool_timeout": self.config.pool_timeout,
-            })
-        
-        logger.info("Creating database engine")
-        return create_engine(self.config.database_url, **engine_kwargs)
-    
-    def _create_async_engine(self) -> AsyncEngine:
-        """Create asynchronous database engine with connection pooling."""
-        engine_kwargs = {
-            "echo": self.config.echo,
-            "pool_pre_ping": True,
-            "pool_recycle": self.config.pool_recycle,
-        }
-        
-        # Configure pooling based on database type
-        if self.config.async_database_url.startswith("sqlite"):
-            engine_kwargs.update({
-                "poolclass": StaticPool,
-                "connect_args": {"check_same_thread": False}
-            })
-        else:
-            engine_kwargs.update({
-                "poolclass": QueuePool,
-                "pool_size": self.config.pool_size,
-                "max_overflow": self.config.max_overflow,
-                "pool_timeout": self.config.pool_timeout,
-            })
-        
-        logger.info("Creating async database engine")
-        return create_async_engine(self.config.async_database_url, **engine_kwargs)
-    
-    async def create_tables(self):
-        """Create all database tables."""
-        async with self.async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables created successfully")
-    
-    async def drop_tables(self):
-        """Drop all database tables."""
-        async with self.async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-        logger.info("Database tables dropped successfully")
-    
-    def get_session(self) -> Session:
-        """Get a new synchronous database session."""
-        return self.session_factory()
-    
-    def get_async_session(self) -> AsyncSession:
-        """Get a new asynchronous database session."""
-        return self.async_session_factory()
-    
-    @asynccontextmanager
-    async def session_scope(self) -> AsyncGenerator[AsyncSession, None]:
-        """Provide a transactional scope around a series of operations."""
-        session = self.get_async_session()
+        Yields:
+            Session: SQLAlchemy database session
+            
+        Raises:
+            DatabaseError: If session creation or operation fails
+        """
+        session = self._session_factory()
         try:
+            logger.debug("Database session created")
             yield session
-            await session.commit()
+            session.commit()
+            logger.debug("Database session committed")
+        except SQLAlchemyError as e:
+            logger.error(f"Database error occurred: {str(e)}")
+            session.rollback()
+            raise DatabaseError(f"Database operation failed: {str(e)}") from e
         except Exception as e:
-            await session.rollback()
-            logger.error(f"Database session error: {e}")
+            logger.error(f"Unexpected error in database session: {str(e)}")
+            session.rollback()
             raise
         finally:
-            await session.close()
+            session.close()
+            logger.debug("Database session closed")
     
-    async def health_check(self) -> bool:
-        """
-        Perform database health check with retry logic.
-        
-        Returns:
-            bool: True if database is healthy, False otherwise.
-        """
-        for attempt in range(MAX_RETRY_ATTEMPTS):
-            try:
-                async with self.async_engine.begin() as conn:
-                    await conn.execute(text("SELECT 1"))
-                logger.info("Database health check passed")
-                return True
-            except Exception as e:
-                wait_time = RETRY_BACKOFF_FACTOR ** attempt
-                logger.warning(
-                    f"Database health check failed (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS}): {e}"
-                )
-                if attempt < MAX_RETRY_ATTEMPTS - 1:
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error("Database health check failed after all retry attempts")
-        
-        return False
+    def create_tables(self) -> None:
+        """Create all database tables."""
+        try:
+            Base.metadata.create_all(bind=self.engine)
+            logger.info("Database tables created successfully")
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to create database tables: {str(e)}")
+            raise DatabaseError(f"Table creation failed: {str(e)}") from e
     
-    async def close(self):
-        """Close database connections."""
-        if self._async_engine:
-            await self._async_engine.dispose()
-            logger.info("Async database engine disposed")
-        
-        if self._engine:
-            self._engine.dispose()
-            logger.info("Database engine disposed")
+    def drop_tables(self) -> None:
+        """Drop all database tables."""
+        try:
+            Base.metadata.drop_all(bind=self.engine)
+            logger.info("Database tables dropped successfully")
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to drop database tables: {str(e)}")
+            raise DatabaseError(f"Table dropping failed: {str(e)}") from e
+    
+    def dispose(self) -> None:
+        """Dispose of the database engine and close all connections."""
+        try:
+            self.engine.dispose()
+            logger.info("Database engine disposed successfully")
+        except Exception as e:
+            logger.error(f"Error disposing database engine: {str(e)}")
 
 
 # Global database manager instance
-db_manager = DatabaseManager()
+db_manager = DatabaseManager(engine)
 
 
-# FastAPI dependency functions
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+def get_db() -> Generator[Session, None, None]:
     """
-    FastAPI dependency for getting database session.
+    FastAPI dependency function for database sessions.
+    
+    This function provides database sessions to FastAPI route handlers
+    with automatic cleanup and error handling.
     
     Yields:
-        AsyncSession: Database session with automatic cleanup.
+        Session: SQLAlchemy database session
+        
+    Example:
+        @app.get("/users/")
+        def get_users(db: Session = Depends(get_db)):
+            return db.query(User).all()
     """
-    async with db_manager.session_scope() as session:
+    session = SessionLocal()
+    try:
+        logger.debug("FastAPI database session created")
         yield session
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in FastAPI dependency: {str(e)}")
+        session.rollback()
+        raise DatabaseError(f"Database operation failed: {str(e)}") from e
+    except Exception as e:
+        logger.error(f"Unexpected error in FastAPI database dependency: {str(e)}")
+        session.rollback()
+        raise
+    finally:
+        session.close()
+        logger.debug("FastAPI database session closed")
 
 
-async def get_db_session() -> AsyncSession:
+def check_database_health() -> Tuple[bool, Optional[str]]:
     """
-    Alternative FastAPI dependency for getting database session.
-    Note: Requires manual session management.
+    Check database connectivity and health.
     
     Returns:
-        AsyncSession: Database session.
+        Tuple[bool, Optional[str]]: (is_healthy, error_message)
+        
+    Example:
+        is_healthy, error = check_database_health()
+        if not is_healthy:
+            logger.error(f"Database health check failed: {error}")
     """
-    return db_manager.get_async_session()
-
-
-# Utility functions
-async def init_database():
-    """Initialize database and create tables."""
     try:
-        await db_manager.create_tables()
-        logger.info("Database initialized successfully")
+        with engine.connect() as connection:
+            # Set a timeout for the health check query
+            connection = connection.execution_options(
+                autocommit=True,
+                compiled_cache={}
+            )
+            
+            # Execute a simple query to test connectivity
+            result = connection.execute(text("SELECT 1"))
+            result.fetchone()
+            
+        logger.debug("Database health check passed")
+        return True, None
+        
+    except DisconnectionError as e:
+        error_msg = "Database connection lost"
+        logger.error(f"Database health check failed: {error_msg} - {str(e)}")
+        return False, error_msg
+        
+    except SQLAlchemyError as e:
+        error_msg = f"Database error: {str(e)}"
+        logger.error(f"Database health check failed: {error_msg}")
+        return False, error_msg
+        
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        raise
+        error_msg = f"Unexpected error during health check: {str(e)}"
+        logger.error(f"Database health check failed: {error_msg}")
+        return False, error_msg
 
 
-async def close_database():
-    """Close database connections."""
-    await db_manager.close()
+class AlembicManager:
+    """Manager for Alembic database migrations."""
+    
+    def __init__(self, alembic_cfg_path: str = "alembic.ini"):
+        self.alembic_cfg_path = alembic_cfg_path
+        self._config: Optional[Config] = None
+    
+    @property
+    def config(self) -> Config:
+        """Get Alembic configuration with database URL."""
+        if self._config is None:
+            if not os.path.exists(self.alembic_cfg_path):
+                raise FileNotFoundError(f"Alembic config file not found: {self.alembic_cfg_path}")
+                
+            self._config = Config(self.alembic_cfg_path)
+            # Set database URL programmatically
+            self._config.set_main_option("sqlalchemy.url", config.database_url)
+            
+        return self._config
+    
+    def upgrade(self, revision: str = "head") -> None:
+        """
+        Run database migrations up to specified revision.
+        
+        Args:
+            revision: Target revision (default: "head" for latest)
+        """
+        try:
+            logger.info(f"Running database upgrade to revision: {revision}")
+            command.upgrade(self.config, revision)
+            logger.info("Database upgrade completed successfully")
+        except Exception as e:
+            logger.error(f"Database upgrade failed: {str(e)}")
+            raise DatabaseError(f"Migration upgrade failed: {str(e)}") from e
+    
+    def downgrade(self, revision: str) -> None:
+        """
+        Run database migrations down to specified revision.
+        
+        Args:
+            revision: Target revision to downgrade to
+        """
+        try:
+            logger.info(f"Running database downgrade to revision: {revision}")
+            command.downgrade(self.config, revision)
+            logger.info("Database downgrade completed successfully")
+        except Exception as e:
+            logger.error(f"Database downgrade failed: {str(e)}")
+            raise DatabaseError(f"Migration downgrade failed: {str(e)}") from e
+    
+    def current(self) -> None:
+        """Show current database revision."""
+        try:
+            command.current(self.config)
+        except Exception as e:
+            logger.error(f"Failed to get current revision: {str(e)}")
+            raise DatabaseError(f"Failed to get current revision: {str(e)}") from e
+    
+    def history(self) -> None:
+        """Show migration history."""
+        try:
+            command.history(self.config)
+        except Exception as e:
+            logger.error(f"Failed to get migration history: {str(e)}")
+            raise DatabaseError(f"Failed to get migration history: {str(e)}") from e
+    
+    def create_revision(self, message: str, autogenerate: bool = True) -> None:
+        """
+        Create a new migration revision.
+        
+        Args:
+            message: Migration message/description
+            autogenerate: Whether to auto-generate migration from model changes
+        """
+        try:
+            logger.info(f"Creating new migration: {message}")
+            command.revision(
+                self.config,
+                message=message,
+                autogenerate=autogenerate
+            )
+            logger.info("Migration created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create migration: {str(e)}")
+            raise DatabaseError(f"Migration creation failed: {str(e)}") from e
 
 
-# Alembic configuration helpers
-def get_alembic_config(ini_path: str = "alembic.ini") -> Config:
+# Global Alembic manager instance
+alembic_manager = AlembicManager()
+
+
+def init_database() -> None:
+    """Initialize database with tables and run migrations."""
+    try:
+        logger.info("Initializing database...")
+        
+        # Check database health first
+        is_healthy, error = check_database_health()
+        if not is_healthy:
+            raise DatabaseConnectionError(f"Database is not healthy: {error}")
+        
+        # Run migrations
+        alembic_manager.upgrade()
+        
+        logger.info("Database initialization completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Database initialization failed: {str(e)}")
+        raise DatabaseError(f"Database initialization failed: {str(e)}") from e
+
+
+def close_database() -> None:
+    """Close database connections and cleanup resources."""
+    try:
+        logger.info("Closing database connections...")
+        db_manager.dispose()
+        logger.info("Database connections closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing database connections: {str(e)}")
+
+
+# Utility functions for common database operations
+def execute_raw_sql(sql: str, params: Optional[Dict] = None) -> Any:
     """
-    Get Alembic configuration.
+    Execute raw SQL query with proper session management.
     
     Args:
-        ini_path: Path to alembic.ini file.
+        sql: SQL query string
+        params: Query parameters
         
     Returns:
-        Config: Alembic configuration object.
+        Query result
     """
-    config = Config(ini_path)
-    config.set_main_option("sqlalchemy.url", db_manager.config.database_url)
-    return config
+    with db_manager.get_session() as session:
+        try:
+            result = session.execute(text(sql), params or {})
+            return result.fetchall()
+        except SQLAlchemyError as e:
+            logger.error(f"Raw SQL execution failed: {str(e)}")
+            raise DatabaseError(f"SQL execution failed: {str(e)}") from e
 
 
-def run_migrations(revision: str = "head", ini_path: str = "alembic.ini"):
+def get_database_info() -> Dict[str, Any]:
     """
-    Run database migrations.
-    
-    Args:
-        revision: Target revision (default: "head").
-        ini_path: Path to alembic.ini file.
-    """
-    try:
-        config = get_alembic_config(ini_path)
-        command.upgrade(config, revision)
-        logger.info(f"Migrations completed successfully to revision: {revision}")
-    except Exception as e:
-        logger.error(f"Migration failed: {e}")
-        raise
-
-
-def create_migration(message: str, ini_path: str = "alembic.ini"):
-    """
-    Create a new migration.
-    
-    Args:
-        message: Migration message.
-        ini_path: Path to alembic.ini file.
-    """
-    try:
-        config = get_alembic_config(ini_path)
-        command.revision(config, message=message, autogenerate=True)
-        logger.info(f"Migration created: {message}")
-    except Exception as e:
-        logger.error(f"Failed to create migration: {e}")
-        raise
-
-
-# Context manager for database operations
-@asynccontextmanager
-async def database_transaction() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Context manager for database transactions with automatic rollback on error.
-    
-    Yields:
-        AsyncSession: Database session within transaction context.
-    """
-    async with db_manager.session_scope() as session:
-        yield session
-
-
-# Health check endpoint helper
-async def database_health_status() -> dict:
-    """
-    Get detailed database health status.
+    Get database information and statistics.
     
     Returns:
-        dict: Health status information.
+        Dict containing database information
     """
-    start_time = time.time()
-    is_healthy = await db_manager.health_check()
-    response_time = time.time() - start_time
-    
-    return {
-        "status": "healthy" if is_healthy else "unhealthy",
-        "response_time_ms": round(response_time * 1000, 2),
-        "database_url": db_manager.config.database_url.split("@")[-1] if "@" in db_manager.config.database_url else "local",
-        "pool_size": db_manager.config.pool_size,
-        "max_overflow": db_manager.config.max_overflow
-    }
-
-
-# Export commonly used items
-__all__ = [
-    "Base",
-    "DatabaseConfig",
-    "DatabaseManager",
-    "db_manager",
-    "get_db",
-    "get_db_session",
-    "init_database",
-    "close_database",
-    "database_transaction",
-    "database_health_status",
-    "run_migrations",
-    "create_migration",
-    "get_alembic_config"
-]
+    try:
+        with engine.connect() as connection:
+            # Get basic database info
+            info = {
+                "url": config.database_url.split("@")[-1] if "@" in config.database_url else config.database_url,
+                "pool_size": config.pool_size,
+                "max_overflow": config.max_overflow,
+                "pool_timeout": config.pool_timeout,
+                "echo": config.echo,
+            }
+            
+            # Add pool statistics if available
+            if hasattr(engine.pool, 'size'):
+                info.update({
+                    "pool_current_size": engine.pool.size(),
+                    "pool_checked_in": engine.pool.checkedin(),
+                    "pool_checked_out": engine.pool.checkedout(),
+                })
+            
+            return info
+            
+    except Exception as e:
+        logger.error(f"Failed to get database info: {str(e)}")
+        return {"error": str(e)}

@@ -1,23 +1,24 @@
 """
 User model for authentication and task ownership.
 
-This module implements a secure User model with bcrypt password hashing,
-proper database constraints, and safe serialization methods.
+This module implements a SQLAlchemy User model with secure password handling,
+soft deletion capabilities, and proper relationship management with tasks.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 import bcrypt
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, Index,
-    func, event
+    create_engine, text
 )
-from sqlalchemy.orm import relationship, validates
 from sqlalchemy.ext.declarative import declarative_base
-import re
+from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.sql import func
 
-# Assuming base is imported from your database configuration
-# from database import Base
+# Import Task model - adjust import path as needed
+# from .task import Task
+
 Base = declarative_base()
 
 
@@ -25,62 +26,61 @@ class User(Base):
     """
     User model for authentication and task ownership.
     
-    Implements secure password hashing with bcrypt, email validation,
-    and soft deletion functionality.
+    Implements secure password hashing with bcrypt, soft deletion using
+    is_active field, and one-to-many relationship with tasks.
     """
     
     __tablename__ = 'users'
     
     # Primary key
-    id = Column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     
-    # User credentials - both unique and required
-    username = Column(
-        String(50), 
+    # User credentials and info
+    username: Mapped[str] = mapped_column(
+        String(80), 
         unique=True, 
-        nullable=False, 
+        nullable=False,
         index=True,
-        doc="Unique username for authentication"
+        comment="Unique username for authentication"
     )
     
-    email = Column(
-        String(255), 
+    email: Mapped[str] = mapped_column(
+        String(120), 
         unique=True, 
-        nullable=False, 
+        nullable=False,
         index=True,
-        doc="Unique email address for user identification"
+        comment="Unique email address for user identification"
     )
     
-    # Password storage - never expose this field
-    hashed_password = Column(
+    hashed_password: Mapped[str] = mapped_column(
         String(128), 
         nullable=False,
-        doc="Bcrypt hashed password - never expose in API responses"
+        comment="Bcrypt hashed password - never store plain text"
     )
     
-    # Soft deletion flag
-    is_active = Column(
+    # Status and metadata
+    is_active: Mapped[bool] = mapped_column(
         Boolean, 
         default=True, 
         nullable=False,
-        doc="Soft deletion flag - False means user is deleted"
+        comment="Soft deletion flag - False indicates deleted user"
     )
     
-    # Timestamp tracking
-    created_at = Column(
-        DateTime(timezone=True), 
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
         nullable=False,
-        doc="UTC timestamp of user creation"
+        comment="UTC timestamp of user creation"
     )
     
-    # Relationship to tasks (one-to-many)
-    tasks = relationship(
+    # Relationships
+    tasks: Mapped[List["Task"]] = relationship(
         "Task",
         back_populates="user",
-        cascade="all, delete-orphan",
+        cascade="all, save-update",  # Don't cascade delete for soft deletion
         lazy="select",
-        doc="All tasks owned by this user"
+        order_by="Task.created_at.desc()"
     )
     
     # Database indexes for performance
@@ -90,13 +90,8 @@ class User(Base):
         Index('idx_user_created_at', 'created_at'),
     )
     
-    # Email validation regex pattern
-    EMAIL_PATTERN = re.compile(
-        r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    )
-    
-    # Bcrypt configuration
-    BCRYPT_ROUNDS = 12  # Secure salt rounds for production
+    # Security configuration
+    _BCRYPT_ROUNDS = 12  # Cost factor for bcrypt hashing
     
     def __init__(
         self, 
@@ -110,93 +105,64 @@ class User(Base):
         
         Args:
             username: Unique username for the user
-            email: Valid email address
-            password: Plain text password (will be hashed)
-            is_active: Whether the user account is active
-            
-        Raises:
-            ValueError: If email format is invalid
+            email: Unique email address for the user
+            password: Plain text password (will be hashed automatically)
+            is_active: Whether the user account is active (default: True)
         """
         self.username = username
         self.email = email
-        self.set_password(password)
+        self.hashed_password = self._hash_password(password)
         self.is_active = is_active
     
-    @validates('email')
-    def validate_email(self, key: str, email: str) -> str:
+    @classmethod
+    def _hash_password(cls, password: str) -> str:
         """
-        Validate email format using regex pattern.
+        Hash a plain text password using bcrypt.
         
-        Args:
-            key: The field name being validated
-            email: Email address to validate
-            
-        Returns:
-            The validated email address
-            
-        Raises:
-            ValueError: If email format is invalid
-        """
-        if not email or not self.EMAIL_PATTERN.match(email.lower()):
-            raise ValueError(f"Invalid email format: {email}")
-        return email.lower()
-    
-    @validates('username')
-    def validate_username(self, key: str, username: str) -> str:
-        """
-        Validate username requirements.
-        
-        Args:
-            key: The field name being validated
-            username: Username to validate
-            
-        Returns:
-            The validated username
-            
-        Raises:
-            ValueError: If username is invalid
-        """
-        if not username or len(username.strip()) < 3:
-            raise ValueError("Username must be at least 3 characters long")
-        if len(username) > 50:
-            raise ValueError("Username must be 50 characters or less")
-        return username.strip()
-    
-    def set_password(self, password: str) -> None:
-        """
-        Hash and set the user's password using bcrypt.
+        Uses a cost factor of 12 rounds for security. This provides good
+        protection against brute force attacks while maintaining reasonable
+        performance for authentication.
         
         Args:
             password: Plain text password to hash
             
+        Returns:
+            str: Bcrypt hashed password
+            
         Raises:
-            ValueError: If password is empty or too weak
+            ValueError: If password is empty or None
             RuntimeError: If bcrypt hashing fails
         """
-        if not password or len(password.strip()) < 8:
-            raise ValueError("Password must be at least 8 characters long")
+        if not password:
+            raise ValueError("Password cannot be empty or None")
         
         try:
-            # Generate salt and hash password
-            salt = bcrypt.gensalt(rounds=self.BCRYPT_ROUNDS)
+            # Convert password to bytes and generate salt
             password_bytes = password.encode('utf-8')
+            salt = bcrypt.gensalt(rounds=cls._BCRYPT_ROUNDS)
+            
+            # Hash password with salt
             hashed = bcrypt.hashpw(password_bytes, salt)
-            self.hashed_password = hashed.decode('utf-8')
+            
+            # Return as string for database storage
+            return hashed.decode('utf-8')
+            
         except Exception as e:
-            raise RuntimeError(f"Failed to hash password: {str(e)}")
+            raise RuntimeError(f"Failed to hash password: {str(e)}") from e
     
     def verify_password(self, password: str) -> bool:
         """
-        Verify a password against the stored hash.
+        Verify a plain text password against the stored hash.
         
-        This method is timing-attack resistant as bcrypt.checkpw
-        performs constant-time comparison.
+        Uses bcrypt's checkpw function which includes timing attack protection
+        by always performing the full hash computation regardless of early
+        mismatches.
         
         Args:
             password: Plain text password to verify
             
         Returns:
-            True if password matches, False otherwise
+            bool: True if password matches, False otherwise
         """
         if not password or not self.hashed_password:
             return False
@@ -204,118 +170,102 @@ class User(Base):
         try:
             password_bytes = password.encode('utf-8')
             hashed_bytes = self.hashed_password.encode('utf-8')
+            
             return bcrypt.checkpw(password_bytes, hashed_bytes)
+            
         except Exception:
             # Log the exception in production, but don't expose details
+            # logger.warning(f"Password verification failed for user {self.id}")
             return False
+    
+    def update_password(self, new_password: str) -> None:
+        """
+        Update the user's password with a new hashed password.
+        
+        Args:
+            new_password: New plain text password
+            
+        Raises:
+            ValueError: If new password is invalid
+            RuntimeError: If password hashing fails
+        """
+        self.hashed_password = self._hash_password(new_password)
     
     def soft_delete(self) -> None:
         """
-        Soft delete the user by setting is_active to False.
+        Perform soft deletion by setting is_active to False.
         
-        This preserves data integrity while marking the user as deleted.
+        This preserves the user record and associated data while marking
+        the account as inactive. The user will not be able to authenticate
+        and should be filtered out of active user queries.
         """
         self.is_active = False
     
-    def restore(self) -> None:
+    def reactivate(self) -> None:
         """
-        Restore a soft-deleted user by setting is_active to True.
+        Reactivate a soft-deleted user account.
+        
+        Sets is_active back to True, allowing the user to authenticate again.
         """
         self.is_active = True
     
-    def to_dict(self, include_tasks: bool = False) -> Dict[str, Any]:
+    def to_dict(self, include_relationships: bool = False) -> Dict[str, Any]:
         """
         Convert user instance to dictionary for API responses.
         
-        Security Note: This method explicitly excludes hashed_password
-        to prevent accidental exposure of sensitive data.
+        Excludes sensitive fields like hashed_password and formats datetime
+        objects as ISO strings for JSON serialization.
         
         Args:
-            include_tasks: Whether to include user's tasks in the response
+            include_relationships: Whether to include related tasks data
             
         Returns:
-            Dictionary representation of the user (safe for API responses)
+            Dict[str, Any]: User data dictionary safe for API responses
         """
         user_dict = {
             'id': self.id,
             'username': self.username,
             'email': self.email,
             'is_active': self.is_active,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None
         }
         
-        if include_tasks:
+        if include_relationships and hasattr(self, 'tasks'):
+            # Only include basic task info to avoid circular references
             user_dict['tasks'] = [
-                task.to_dict() for task in self.tasks
-            ] if self.tasks else []
+                {
+                    'id': task.id,
+                    'title': getattr(task, 'title', None),
+                    'status': getattr(task, 'status', None),
+                    'created_at': task.created_at.isoformat() if hasattr(task, 'created_at') and task.created_at else None
+                }
+                for task in self.tasks
+            ]
         
         return user_dict
     
-    def update_profile(
-        self, 
-        username: Optional[str] = None, 
-        email: Optional[str] = None
-    ) -> None:
-        """
-        Update user profile information.
-        
-        Args:
-            username: New username (optional)
-            email: New email address (optional)
-        """
-        if username is not None:
-            self.username = username
-        if email is not None:
-            self.email = email
-    
-    def get_active_tasks_count(self) -> int:
+    @property
+    def active_tasks_count(self) -> int:
         """
         Get count of active tasks for this user.
         
         Returns:
-            Number of active tasks
+            int: Number of active tasks
         """
-        return len([task for task in self.tasks if task.is_active])
-    
-    @classmethod
-    def find_by_username(cls, session, username: str) -> Optional['User']:
-        """
-        Find an active user by username.
+        if not hasattr(self, 'tasks'):
+            return 0
         
-        Args:
-            session: SQLAlchemy session
-            username: Username to search for
-            
-        Returns:
-            User instance if found and active, None otherwise
-        """
-        return session.query(cls).filter(
-            cls.username == username,
-            cls.is_active == True
-        ).first()
-    
-    @classmethod
-    def find_by_email(cls, session, email: str) -> Optional['User']:
-        """
-        Find an active user by email.
-        
-        Args:
-            session: SQLAlchemy session
-            email: Email address to search for
-            
-        Returns:
-            User instance if found and active, None otherwise
-        """
-        return session.query(cls).filter(
-            cls.email == email.lower(),
-            cls.is_active == True
-        ).first()
+        return len([
+            task for task in self.tasks 
+            if getattr(task, 'is_active', True)
+        ])
     
     def __repr__(self) -> str:
         """
         String representation for debugging.
         
-        Note: Does not include sensitive information like passwords.
+        Returns:
+            str: Safe string representation excluding sensitive data
         """
         return (
             f"<User(id={self.id}, username='{self.username}', "
@@ -323,49 +273,41 @@ class User(Base):
         )
     
     def __str__(self) -> str:
-        """Human-readable string representation."""
-        return f"User: {self.username} ({self.email})"
+        """
+        Human-readable string representation.
+        
+        Returns:
+            str: User's username
+        """
+        return self.username
 
 
-# Event listeners for additional security and data integrity
-
-@event.listens_for(User.hashed_password, 'set')
-def receive_set_password(target, value, oldvalue, initiator):
+# Query helper methods (can be moved to a separate service class)
+class UserQueryMixin:
     """
-    Event listener to prevent setting already hashed passwords.
+    Mixin class with common query methods for User model.
     
-    This helps prevent double-hashing if set_password is called multiple times.
+    These methods can be used with SQLAlchemy sessions to perform
+    common user operations with proper soft deletion handling.
     """
-    # Check if the value looks like a bcrypt hash
-    if value and isinstance(value, str) and value.startswith('$2b$'):
-        # This is likely already a bcrypt hash, allow it
-        return value
-    return value
-
-
-@event.listens_for(User, 'before_insert')
-def receive_before_insert(mapper, connection, target):
-    """
-    Event listener to ensure data consistency before insert.
-    """
-    # Ensure email is lowercase
-    if target.email:
-        target.email = target.email.lower()
     
-    # Ensure username is stripped
-    if target.username:
-        target.username = target.username.strip()
-
-
-@event.listens_for(User, 'before_update')
-def receive_before_update(mapper, connection, target):
-    """
-    Event listener to ensure data consistency before update.
-    """
-    # Ensure email is lowercase
-    if target.email:
-        target.email = target.email.lower()
+    @staticmethod
+    def get_active_users(session):
+        """Get all active users (is_active=True)."""
+        return session.query(User).filter(User.is_active == True)
     
-    # Ensure username is stripped
-    if target.username:
-        target.username = target.username.strip()
+    @staticmethod
+    def find_by_username(session, username: str, active_only: bool = True):
+        """Find user by username, optionally filtering to active users only."""
+        query = session.query(User).filter(User.username == username)
+        if active_only:
+            query = query.filter(User.is_active == True)
+        return query.first()
+    
+    @staticmethod
+    def find_by_email(session, email: str, active_only: bool = True):
+        """Find user by email, optionally filtering to active users only."""
+        query = session.query(User).filter(User.email == email)
+        if active_only:
+            query = query.filter(User.is_active == True)
+        return query.first()

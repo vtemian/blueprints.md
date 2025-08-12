@@ -1,176 +1,142 @@
 """
 User management API endpoints with authentication.
-Production-ready FastAPI module for user registration, authentication, and profile management.
+
+This module provides comprehensive user management functionality including
+registration, authentication, profile management, and password reset.
 """
 
 import os
-import re
 from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, Field, validator
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from pydantic import BaseModel, EmailStr, validator
+from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from models.user import User
 from core.database import get_db
 
 # Configuration
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 # Security setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-security = HTTPBearer()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/users/login")
 
 # Router setup
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/api/users", tags=["users"])
 
 
 # Pydantic Models
-class UserRegistration(BaseModel):
-    """User registration request model."""
-    email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., min_length=8, description="User password")
-    
-    @validator("email")
-    def validate_email(cls, v):
-        """Validate email format and sanitize input."""
-        email = v.lower().strip()
-        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-            raise ValueError("Invalid email format")
-        return email
+class UserCreate(BaseModel):
+    """Schema for user registration."""
+    email: EmailStr
+    password: str
     
     @validator("password")
     def validate_password(cls, v):
-        """Validate password strength."""
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters long")
-        if not re.search(r'[A-Z]', v):
+        if not any(c.isupper() for c in v):
             raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r'[a-z]', v):
+        if not any(c.islower() for c in v):
             raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r'\d', v):
+        if not any(c.isdigit() for c in v):
             raise ValueError("Password must contain at least one digit")
-        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
-            raise ValueError("Password must contain at least one special character")
         return v
 
 
 class UserLogin(BaseModel):
-    """User login request model."""
-    email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., description="User password")
-    
-    @validator("email")
-    def validate_email(cls, v):
-        """Sanitize email input."""
-        return v.lower().strip()
+    """Schema for user login."""
+    email: EmailStr
+    password: str
 
 
-class UserProfile(BaseModel):
-    """User profile response model."""
+class UserResponse(BaseModel):
+    """Schema for user response (excludes sensitive data)."""
     id: int
     email: str
-    is_active: bool
-    created_at: Optional[datetime] = None
+    created_at: datetime
     
     class Config:
         from_attributes = True
 
 
-class UserProfileUpdate(BaseModel):
-    """User profile update request model."""
-    email: Optional[EmailStr] = Field(None, description="New email address")
+class UserUpdate(BaseModel):
+    """Schema for user profile updates."""
+    email: Optional[EmailStr] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
     
-    @validator("email")
-    def validate_email(cls, v):
-        """Validate and sanitize email input."""
+    @validator("new_password")
+    def validate_new_password(cls, v):
         if v is not None:
-            email = v.lower().strip()
-            if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
-                raise ValueError("Invalid email format")
-            return email
+            if len(v) < 8:
+                raise ValueError("Password must be at least 8 characters long")
+            if not any(c.isupper() for c in v):
+                raise ValueError("Password must contain at least one uppercase letter")
+            if not any(c.islower() for c in v):
+                raise ValueError("Password must contain at least one lowercase letter")
+            if not any(c.isdigit() for c in v):
+                raise ValueError("Password must contain at least one digit")
         return v
 
 
-class PasswordResetRequest(BaseModel):
-    """Password reset request model."""
-    email: EmailStr = Field(..., description="User email address")
-    
-    @validator("email")
-    def validate_email(cls, v):
-        """Sanitize email input."""
-        return v.lower().strip()
-
-
-class TokenResponse(BaseModel):
-    """JWT token response model."""
+class Token(BaseModel):
+    """Schema for JWT token response."""
     access_token: str
-    token_type: str = "bearer"
-    expires_in: int = JWT_EXPIRATION_HOURS * 3600
+    token_type: str
 
 
-class MessageResponse(BaseModel):
-    """Generic message response model."""
-    message: str
+class PasswordResetRequest(BaseModel):
+    """Schema for password reset request."""
+    email: EmailStr
 
 
 # Utility Functions
-def hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
-    return pwd_context.hash(password)
-
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
+    """Verify a plain password against its hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(data: dict) -> str:
-    """Create a JWT access token."""
+def get_password_hash(password: str) -> str:
+    """Generate password hash."""
+    return pwd_context.hash(password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create JWT access token."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 
-async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
-    """Get user by email address."""
-    result = await db.execute(select(User).filter(User.email == email))
-    return result.scalar_one_or_none()
-
-
-async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
-    """Get user by ID."""
-    result = await db.execute(select(User).filter(User.id == user_id))
-    return result.scalar_one_or_none()
+def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
+    """Authenticate user with email and password."""
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
+    return user
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db)
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
 ) -> User:
-    """
-    Dependency to get the current authenticated user from JWT token.
-    
-    Args:
-        credentials: HTTP Bearer token credentials
-        db: Database session
-        
-    Returns:
-        User: Current authenticated user
-        
-    Raises:
-        HTTPException: If token is invalid or user not found
-    """
+    """Get current authenticated user from JWT token."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -178,204 +144,228 @@ async def get_current_user(
     )
     
     try:
-        payload = jwt.decode(credentials.credentials, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        user_id: int = payload.get("sub")
-        if user_id is None:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
     
-    user = await get_user_by_id(db, user_id=user_id)
-    if user is None or not user.is_active:
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
         raise credentials_exception
     
     return user
 
 
 # API Endpoints
-@router.post("/register", response_model=UserProfile, status_code=status.HTTP_201_CREATED)
-async def register_user(
-    user_data: UserRegistration,
-    db: AsyncSession = Depends(get_db)
-) -> UserProfile:
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
     """
-    Register a new user account.
+    Register a new user.
     
-    Args:
-        user_data: User registration data
-        db: Database session
-        
-    Returns:
-        UserProfile: Created user profile
-        
-    Raises:
-        HTTPException: If email already exists or validation fails
+    - **email**: Valid email address (must be unique)
+    - **password**: Strong password (min 8 chars, uppercase, lowercase, digit)
+    
+    Returns the created user data (excluding password).
     """
-    # Check if user already exists
-    existing_user = await get_user_by_email(db, user_data.email)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Create new user
-    hashed_password = hash_password(user_data.password)
-    new_user = User(
-        email=user_data.email,
-        password_hash=hashed_password,
-        is_active=True
-    )
-    
     try:
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
+        # Check if user already exists
+        existing_user = db.query(User).filter(User.email == user_data.email).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered"
+            )
+        
+        # Create new user
+        hashed_password = get_password_hash(user_data.password)
+        db_user = User(
+            email=user_data.email,
+            hashed_password=hashed_password,
+            created_at=datetime.utcnow()
+        )
+        
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        
+        return db_user
+        
     except IntegrityError:
-        await db.rollback()
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Email already registered"
         )
-    
-    return UserProfile.from_orm(new_user)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during registration"
+        )
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=Token)
 async def login_user(
-    user_data: UserLogin,
-    db: AsyncSession = Depends(get_db)
-) -> TokenResponse:
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
     """
     Authenticate user and return JWT token.
     
-    Args:
-        user_data: User login credentials
-        db: Database session
-        
-    Returns:
-        TokenResponse: JWT access token
-        
-    Raises:
-        HTTPException: If credentials are invalid
+    - **username**: User's email address
+    - **password**: User's password
+    
+    Returns JWT access token for authenticated requests.
     """
-    user = await get_user_by_email(db, user_data.email)
-    
-    if not user or not user.is_active or not verify_password(user_data.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
+    try:
+        user = authenticate_user(db, form_data.username, form_data.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.email}, expires_delta=access_token_expires
         )
-    
-    access_token = create_access_token(data={"sub": user.id})
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        expires_in=JWT_EXPIRATION_HOURS * 3600
-    )
+        
+        return {"access_token": access_token, "token_type": "bearer"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during login"
+        )
 
 
-@router.get("/me", response_model=UserProfile)
+@router.get("/me", response_model=UserResponse)
 async def get_current_user_profile(
     current_user: User = Depends(get_current_user)
-) -> UserProfile:
+):
     """
     Get current user's profile information.
     
-    Args:
-        current_user: Current authenticated user
-        
-    Returns:
-        UserProfile: User profile data
+    Requires valid JWT token in Authorization header.
+    Returns current user's profile data.
     """
-    return UserProfile.from_orm(current_user)
+    return current_user
 
 
-@router.put("/me", response_model=UserProfile)
+@router.put("/me", response_model=UserResponse)
 async def update_user_profile(
-    profile_data: UserProfileUpdate,
+    user_update: UserUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-) -> UserProfile:
+    db: Session = Depends(get_db)
+):
     """
-    Update current user's profile information.
+    Update current user's profile.
     
-    Args:
-        profile_data: Profile update data
-        current_user: Current authenticated user
-        db: Database session
-        
-    Returns:
-        UserProfile: Updated user profile
-        
-    Raises:
-        HTTPException: If email already exists or validation fails
+    - **email**: New email address (optional, must be unique)
+    - **current_password**: Required if changing password
+    - **new_password**: New password (optional, must meet strength requirements)
+    
+    Requires valid JWT token in Authorization header.
     """
-    # Check if email is being updated and if it already exists
-    if profile_data.email and profile_data.email != current_user.email:
-        existing_user = await get_user_by_email(db, profile_data.email)
-        if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        current_user.email = profile_data.email
-    
     try:
-        await db.commit()
-        await db.refresh(current_user)
+        # Handle password change
+        if user_update.new_password:
+            if not user_update.current_password:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Current password required to set new password"
+                )
+            
+            if not verify_password(user_update.current_password, current_user.hashed_password):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Current password is incorrect"
+                )
+            
+            current_user.hashed_password = get_password_hash(user_update.new_password)
+        
+        # Handle email change
+        if user_update.email and user_update.email != current_user.email:
+            # Check if new email is already taken
+            existing_user = db.query(User).filter(
+                User.email == user_update.email,
+                User.id != current_user.id
+            ).first()
+            
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Email already in use"
+                )
+            
+            current_user.email = user_update.email
+        
+        db.commit()
+        db.refresh(current_user)
+        
+        return current_user
+        
+    except HTTPException:
+        db.rollback()
+        raise
     except IntegrityError:
-        await db.rollback()
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use"
         )
-    
-    return UserProfile.from_orm(current_user)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during profile update"
+        )
 
 
-@router.post("/password-reset", response_model=MessageResponse)
+@router.post("/password-reset", status_code=status.HTTP_200_OK)
 async def request_password_reset(
-    reset_data: PasswordResetRequest,
-    db: AsyncSession = Depends(get_db)
-) -> MessageResponse:
+    reset_request: PasswordResetRequest,
+    db: Session = Depends(get_db)
+):
     """
     Request password reset for user account.
     
-    Note: In production, this should send an email with a secure reset link
-    instead of directly resetting the password.
+    - **email**: Email address of the account
     
-    Args:
-        reset_data: Password reset request data
-        db: Database session
-        
-    Returns:
-        MessageResponse: Success message
-        
-    Raises:
-        HTTPException: If user not found
+    Returns consistent response regardless of whether email exists (security measure).
+    In production, this would trigger an email with reset instructions.
     """
-    user = await get_user_by_email(db, reset_data.email)
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User account is inactive"
-        )
-    
-    # In production, generate a secure reset token and send email
-    # For now, return a success message
-    # reset_token = create_access_token(data={"sub": user.id, "type": "password_reset"})
-    # send_password_reset_email(user.email, reset_token)
-    
-    return MessageResponse(
-        message="Password reset instructions have been sent to your email address"
-    )
+    try:
+        # Check if user exists (but don't reveal this information in response)
+        user = db.query(User).filter(User.email == reset_request.email).first()
+        
+        if user:
+            # In production, you would:
+            # 1. Generate a secure reset token
+            # 2. Store it in database with expiration
+            # 3. Send email with reset link
+            # 4. Log the reset request
+            pass
+        
+        # Always return the same response for security
+        return {
+            "message": "If an account with that email exists, password reset instructions have been sent."
+        }
+        
+    except Exception as e:
+        # Log error but still return consistent response
+        return {
+            "message": "If an account with that email exists, password reset instructions have been sent."
+        }
+
+
+# Health check endpoint
+@router.get("/health")
+async def health_check():
+    """Health check endpoint for user service."""
+    return {"status": "healthy", "service": "user-management"}
