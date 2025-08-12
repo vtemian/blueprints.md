@@ -13,23 +13,6 @@ help:
 	@echo '  test        - Run tests'
 	@echo '  clean       - Clean up generated files'
 
-requirements.txt:
-	@echo 'Generating requirements.txt...'
-	@echo '# Production dependencies' > requirements.txt
-	@echo 'fastapi' >> requirements.txt
-	@echo 'uvicorn' >> requirements.txt
-	@echo 'sqlalchemy' >> requirements.txt
-	@echo 'pydantic' >> requirements.txt
-	@echo 'python-dotenv' >> requirements.txt
-
-install: requirements.txt
-	@echo 'Installing production dependencies...'
-	pip install -r requirements.txt
-
-setup: install
-	@echo 'Project setup complete!'
-	@echo 'Environment variables to set:'
-
 run:
 	@echo 'Starting app...'
 	python -m app
