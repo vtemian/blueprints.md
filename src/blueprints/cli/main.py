@@ -191,8 +191,11 @@ def generate_project(
         )
         
         logger.info("Generating project files...")
+        # Use the target directory, not current directory
+        output_dir = path if path.is_dir() else path.parent
+        logger.debug(f"Output directory: {output_dir}")
         generated_files = generator.generate_project(
-            resolved, Path("."), language, force, None, True
+            resolved, output_dir, language, force, blueprint_file, True
         )
         
         click.echo(f"✅ Generated {len(generated_files)} files:")

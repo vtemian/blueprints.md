@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import click
 
 from .logging_config import get_logger
@@ -25,7 +26,7 @@ class ProjectGenerator:
         force: bool = False,
         main_md_path: Optional[Path] = None,
         verify: bool = True,
-        use_batch_processing: bool = True,
+        use_concurrent_processing: bool = True,
     ) -> Dict[str, Path]:
         """Generate code for all blueprints in dependency order."""
         logger = get_logger('project')
@@ -33,7 +34,7 @@ class ProjectGenerator:
         logger.debug(f"Output directory: {output_dir}")
         logger.debug(f"Target language: {language}")
         logger.debug(f"Verification enabled: {verify}")
-        logger.debug(f"Batch processing: {use_batch_processing}")
+        logger.debug(f"Concurrent processing: {use_concurrent_processing}")
         
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -41,11 +42,11 @@ class ProjectGenerator:
         if main_md_path and main_md_path.exists():
             dependency_versions = self.code_generator.extract_dependency_versions(main_md_path)
 
-        # Use batch processing for better performance
-        if use_batch_processing and len(resolved.generation_order) > 1:
-            logger.info(f"Using batch processing for {len(resolved.generation_order)} files")
-            generated_files = self._generate_project_batch(
-                resolved, output_dir, language, dependency_versions, force, verify
+        # Use concurrent processing for better performance
+        if use_concurrent_processing and len(resolved.generation_order) > 1:
+            logger.info(f"Using concurrent processing for {len(resolved.generation_order)} files")
+            generated_files = self._generate_project_concurrent(
+                resolved, output_dir, language, dependency_versions, force, verify, main_md_path
             )
         else:
             logger.info("Using individual file generation")
@@ -105,7 +106,7 @@ class ProjectGenerator:
 
         return generated_files
     
-    def _generate_project_batch(
+    def _generate_project_concurrent(
         self,
         resolved: ResolvedBlueprint,
         output_dir: Path,
@@ -113,143 +114,125 @@ class ProjectGenerator:
         dependency_versions: Dict[str, str],
         force: bool,
         verify: bool,
+        main_md_path: Optional[Path] = None,
     ) -> Dict[str, Path]:
-        """Generate multiple files in a single batch API call."""
+        """Generate files concurrently using ThreadPoolExecutor."""
         logger = get_logger('project')
-        logger.info("Generating all files in single batch API call...")
+        generated_files = {}
+        generated_context = {}
         
-        try:
-            # Generate all files at once
-            batch_results = self._generate_batch_api_call(resolved, language, dependency_versions)
-            
-            # Write files to disk and verify
-            generated_files = {}
+        # Determine optimal number of workers (max 4 to avoid API rate limits)
+        max_workers = min(4, len(resolved.generation_order))
+        logger.info(f"Using {max_workers} concurrent threads for generation")
+        
+        # Create a thread pool and submit all generation tasks
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_blueprint = {}
             for blueprint in resolved.generation_order:
-                if blueprint.module_name in batch_results:
-                    code = batch_results[blueprint.module_name]
-                    output_path = self._write_generated_file(
-                        blueprint, code, output_dir, language, force
-                    )
-                    
-                    # Basic verification only
-                    if verify:
-                        self._verify_generated_code(code, blueprint, output_path)
-                    
-                    generated_files[blueprint.module_name] = output_path
-                    logger.info(f"✓ Generated {blueprint.module_name} -> {output_path}")
-                else:
-                    logger.warning(f"No code generated for {blueprint.module_name}")
+                future = executor.submit(
+                    self._generate_single_blueprint_thread_safe,
+                    blueprint,
+                    resolved,
+                    dependency_versions,
+                    language,
+                    output_dir,
+                    force,
+                    verify,
+                    main_md_path
+                )
+                future_to_blueprint[future] = blueprint
             
-            logger.info(f"Batch generation completed: {len(generated_files)} files")
-            return generated_files
+            # Collect results as they complete
+            completed_count = 0
+            for future in as_completed(future_to_blueprint):
+                blueprint = future_to_blueprint[future]
+                completed_count += 1
+                
+                try:
+                    code, output_path = future.result()
+                    generated_files[blueprint.module_name] = output_path
+                    generated_context[blueprint.module_name] = code
+                    logger.info(f"✓ [{completed_count}/{len(resolved.generation_order)}] Generated {blueprint.module_name} -> {output_path}")
+                except Exception as e:
+                    logger.error(f"✗ Failed to generate {blueprint.module_name}: {str(e)}")
+                    # For concurrent processing, we'll continue with other files
+                    # rather than failing the entire batch
+                    logger.warning(f"Continuing with remaining files...")
+        
+        logger.info(f"Concurrent generation completed: {len(generated_files)}/{len(resolved.generation_order)} files")
+        return generated_files
+    
+    def _generate_single_blueprint_thread_safe(
+        self,
+        blueprint: Blueprint,
+        resolved: ResolvedBlueprint,
+        dependency_versions: Dict[str, str],
+        language: str,
+        output_dir: Path,
+        force: bool,
+        verify: bool,
+        main_md_path: Optional[Path],
+    ) -> tuple[str, Path]:
+        """Thread-safe single blueprint generation."""
+        logger = get_logger('project')
+        
+        # Build context - this is thread-safe since we're only reading
+        context_parts = self.code_generator.create_comprehensive_context(resolved, language)
+        
+        # Generate code
+        try:
+            if verify:
+                project_root = (
+                    resolved.main.file_path.parent
+                    if resolved.main.file_path
+                    else output_dir
+                )
+                
+                code, verification_results = self.code_generator.generate_with_verification(
+                    blueprint, context_parts, language, 1, project_root, main_md_path
+                )
+                
+                # Log verification results
+                passed_checks = sum(1 for result in verification_results if result.success)
+                total_checks = len(verification_results)
+                
+                if passed_checks < total_checks:
+                    failed_checks = [r for r in verification_results if not r.success]
+                    issues = []
+                    for result in failed_checks:
+                        if result.suggestions:
+                            issues.extend([f"{result.error_type}: {s}" for s in result.suggestions[:2]])
+                        else:
+                            issues.append(f"{result.error_type}: {result.error_message}")
+                    
+                    logger.warning(f"Blueprint {blueprint.module_name} has verification issues:")
+                    for issue in issues[:3]:  # Limit output
+                        logger.warning(f"  - {issue}")
+                
+            else:
+                # No verification - faster generation
+                if hasattr(blueprint, 'requirements'):
+                    code = self.code_generator.generate_natural_blueprint(
+                        blueprint, context_parts, language, dependency_versions
+                    )
+                else:
+                    code = self.code_generator.generate_single_blueprint(
+                        blueprint, context_parts, language, dependency_versions
+                    )
+            
+            # Write to file (this needs to be thread-safe too)
+            output_path = self._write_generated_file_thread_safe(
+                blueprint, code, output_dir, language, force
+            )
+            
+            return code, output_path
             
         except Exception as e:
-            logger.error(f"Batch generation failed: {e}")
-            logger.info("Falling back to individual file generation...")
-            return self._generate_project_individual(
-                resolved, output_dir, language, dependency_versions, force, verify
-            )
+            logger.error(f"Thread-safe generation failed for {blueprint.module_name}: {e}")
+            raise
     
-    def _generate_batch_api_call(
-        self, 
-        resolved: ResolvedBlueprint,
-        language: str,
-        dependency_versions: Dict[str, str]
-    ) -> Dict[str, str]:
-        """Make a single API call to generate all files at once."""
-        logger = get_logger('project')
-        
-        # Build comprehensive context with all blueprints
-        context_parts = []
-        context_parts.append("=== PROJECT BLUEPRINTS ===")
-        
-        # Add all blueprints as context
-        for blueprint in resolved.generation_order:
-            context_parts.append(f"--- {blueprint.module_name} Blueprint ---")
-            context_parts.append(blueprint.raw_content.strip())
-            context_parts.append("")
-        
-        # Create batch generation prompt
-        file_list = [f"- {bp.module_name}" for bp in resolved.generation_order]
-        batch_prompt = f"""
-Generate complete, production-ready {language} code for ALL the following modules in a single response:
-
-{chr(10).join(file_list)}
-
-CONTEXT:
-{chr(10).join(context_parts)}
-
-REQUIREMENTS:
-1. Generate complete, working code for each module
-2. Use appropriate imports and dependencies 
-3. Follow {language} best practices and conventions
-4. Ensure modules work together as a cohesive project
-5. Use absolute imports (avoid relative imports like "from ..module")
-6. Include proper error handling and logging where appropriate
-
-DEPENDENCY VERSIONS:
-{dependency_versions if dependency_versions else "Use latest stable versions"}
-
-OUTPUT FORMAT:
-Return the code for each module separated by clear markers:
-
-=== MODULE: module_name ===
-[complete code for module_name]
-
-=== MODULE: next_module ===
-[complete code for next_module]
-
-...and so on for all modules.
-
-Generate all {len(resolved.generation_order)} modules now:
-"""
-        
-        logger.debug(f"Making batch API call for {len(resolved.generation_order)} files")
-        logger.debug(f"Prompt size: {len(batch_prompt)} characters")
-        
-        # Make the API call
-        response = self.code_generator._make_api_call(batch_prompt)
-        
-        # Parse the response to extract individual modules
-        return self._parse_batch_response(response, resolved.generation_order)
-    
-    def _parse_batch_response(self, response: str, blueprints: List[Blueprint]) -> Dict[str, str]:
-        """Parse the batch response to extract individual module codes."""
-        logger = get_logger('project')
-        results = {}
-        
-        # Split by module markers
-        sections = response.split("=== MODULE:")
-        
-        for section in sections[1:]:  # Skip first empty section
-            if not section.strip():
-                continue
-                
-            lines = section.strip().split('\n')
-            if not lines:
-                continue
-                
-            # Extract module name from first line
-            module_line = lines[0].strip()
-            module_name = module_line.split()[0].strip()
-            
-            # Remove the module name line and extract code
-            code_lines = lines[1:]
-            
-            # Remove the === separator if it exists
-            while code_lines and code_lines[0].strip().startswith('==='):
-                code_lines = code_lines[1:]
-            
-            code = '\n'.join(code_lines).strip()
-            
-            if code and module_name:
-                results[module_name] = code
-                logger.debug(f"Extracted code for {module_name}: {len(code)} characters")
-        
-        logger.info(f"Parsed batch response: {len(results)}/{len(blueprints)} modules extracted")
-        return results
-    
-    def _write_generated_file(
+    def _write_generated_file_thread_safe(
         self, 
         blueprint: Blueprint, 
         code: str, 
@@ -257,39 +240,34 @@ Generate all {len(resolved.generation_order)} modules now:
         language: str,
         force: bool
     ) -> Path:
-        """Write generated code to file."""
+        """Thread-safe file writing with proper locking."""
+        import threading
         from .cli.main import get_file_extension
         
-        # Determine output path
-        output_path = output_dir / f"{blueprint.module_name.replace('.', '/')}{get_file_extension(language)}"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Use a lock for file operations (though Path operations are generally thread-safe)
+        if not hasattr(self, '_file_lock'):
+            self._file_lock = threading.Lock()
         
-        # Check if file exists
-        if output_path.exists() and not force:
-            raise FileExistsError(f"Output file already exists: {output_path}")
-        
-        # Write the file
-        output_path.write_text(code, encoding='utf-8')
-        return output_path
-    
-    def _verify_generated_code(self, code: str, blueprint: Blueprint, output_path: Path):
-        """Basic verification of generated code."""
-        logger = get_logger('project')
-        
-        try:
-            # Only do syntax check for batch processing (faster)
-            from .verifier import CodeVerifier
-            verifier = CodeVerifier()
-            syntax_result = verifier.verify_syntax(code)
+        with self._file_lock:
+            # Ensure output_dir is absolute
+            if not output_dir.is_absolute():
+                output_dir = output_dir.resolve()
             
-            if not syntax_result.success:
-                logger.warning(f"Syntax error in {blueprint.module_name}: {syntax_result.error_message}")
-            else:
-                logger.debug(f"✓ Syntax check passed for {blueprint.module_name}")
-                
-        except Exception as e:
-            logger.debug(f"Verification skipped for {blueprint.module_name}: {e}")
-
+            # Determine output path
+            module_path = blueprint.module_name.replace('.', '/')
+            output_path = output_dir / f"{module_path}{get_file_extension(language)}"
+            
+            # Create parent directories
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Check if file exists
+            if output_path.exists() and not force:
+                raise FileExistsError(f"Output file already exists: {output_path}")
+            
+            # Write the file
+            output_path.write_text(code, encoding='utf-8')
+            return output_path
+    
     def generate_single_with_context(
         self,
         resolved: ResolvedBlueprint,
