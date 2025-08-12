@@ -12,7 +12,7 @@ class BlueprintsConfig(BaseSettings):
 
     # API Configuration
     anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
-    default_model: str = Field("claude-3-5-sonnet-20241022", env="BLUEPRINTS_MODEL")
+    default_model: str = Field("claude-sonnet-4-20250514", env="BLUEPRINTS_MODEL")
 
     # Generation Settings
     default_language: str = Field("python", env="BLUEPRINTS_LANGUAGE")

@@ -30,19 +30,27 @@ uv run pytest --cov
 # Type checking
 uv run mypy .
 
-# CLI tool (when implemented)
+# CLI tool
 uv run blueprints --help
+
+# Code verification (requires ANTHROPIC_API_KEY)
+export ANTHROPIC_API_KEY=your_key_here
+uv run blueprints generate-project examples/task_api/
 ```
 
 ## Blueprint Format
 
-Compact format:
+Natural language format (see BLUEPRINTS_SPEC.md for full details):
 - `# module.name` - Module declaration on first line
-- `deps:` - Dependencies in compact format
-- Component definitions (classes, functions, constants)
-- `notes:` - Implementation notes
+- Natural description of what the module should do
+- `Dependencies:` - External libraries and blueprint references
+- `Requirements:` - Key functional and technical requirements  
+- Additional sections as needed (Business Context, Security Notes, etc.)
 
 ## Important Notes
 
 - Blueprint files are the source of truth for system architecture
-- The CLI implementation is missing and needs to be created in `src/blueprints/cli/`
+- **Pure Claude System**: Requires `ANTHROPIC_API_KEY` environment variable for all operations
+- **Intelligent parsing**: Claude understands natural language blueprints using BLUEPRINTS_SPEC.md as context
+- **Intelligent verification**: Claude analyzes generated code against blueprint requirements
+- **No regex parsing**: System uses AI for all blueprint understanding - more flexible and powerful

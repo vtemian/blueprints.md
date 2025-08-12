@@ -69,18 +69,27 @@ class CodeGenerator:
         project_root: Optional[Path] = None,
         main_md_path: Optional[Path] = None,
     ) -> Tuple[str, List]:
-        """Generate code with verification and retry loop."""
-        from .verifier import GenerationVerifier
+        """Generate code with simple verification (no retries)."""
+        from .verifier import CodeVerifier
 
         if project_root is None and blueprint.file_path:
             project_root = blueprint.file_path.parent
 
-        verifier = GenerationVerifier(
-            max_retries=max_retries, language=language, project_root=project_root
+        # Extract dependency versions if available
+        dependency_versions = {}
+        if main_md_path and main_md_path.exists():
+            dependency_versions = self._extract_dependency_versions(main_md_path)
+
+        # Generate code once
+        code = self.generate_single_blueprint(
+            blueprint, context_parts, language, dependency_versions
         )
-        return verifier.verify_and_improve(
-            self, blueprint, context_parts, language, main_md_path
-        )
+
+        # Simple verification (caller handles retries if needed)
+        verifier = CodeVerifier(project_root)
+        results = verifier.verify_all(code, blueprint)
+
+        return code, results
 
     def create_blueprint_context(
         self,

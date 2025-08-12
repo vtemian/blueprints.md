@@ -36,12 +36,12 @@ setup: install
 	@echo 'Environment variables to set:'
 
 run:
-	@echo 'Starting app...'
-	python -m app
+	@echo 'Starting main...'
+	python -m main
 
 dev:
-	@echo 'Starting app in development mode...'
-	python -m app --reload
+	@echo 'Starting main in development mode...'
+	python -m main --reload
 
 test:
 	@echo 'Running tests...'

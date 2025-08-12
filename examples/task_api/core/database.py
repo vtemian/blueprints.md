@@ -3,73 +3,111 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase
+
 logger = logging.getLogger(__name__)
 
 # Database configuration
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "taskdb")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "postgres")
 
-ASYNC_DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-SYNC_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-class Base:
+
+class Base(DeclarativeBase):
+    """Base class for SQLAlchemy models"""
     pass
 
+
 class DatabaseManager:
+    """Manages database connections and sessions"""
+    
     def __init__(self) -> None:
-        self.engine = None
-        self.async_session_maker = None
+        self.engine: Optional[AsyncEngine] = None
+        self.async_session_maker: Optional[async_sessionmaker[AsyncSession]] = None
 
     async def init_db(self) -> None:
-        """Initialize database connection and session maker."""
+        """Initialize database connection and session maker"""
         try:
-            self.engine = None # Mock engine creation
-            self.async_session_maker = None # Mock session maker
-            logger.info("Database connection established successfully")
+            self.engine = create_async_engine(
+                DATABASE_URL,
+                echo=False,
+                pool_pre_ping=True,
+                pool_size=5,
+                max_overflow=10
+            )
             
+            self.async_session_maker = async_sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+                autoflush=False
+            )
+            
+            # Create tables if they don't exist
+            async with self.engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                
         except Exception as e:
-            logger.error(f"Database initialization failed: {str(e)}")
+            logger.error(f"Failed to initialize database: {e}")
             raise
 
     async def close_db(self) -> None:
-        """Close database connections."""
+        """Close database connections"""
         if self.engine:
-            # Mock engine disposal
-            logger.info("Database connections closed")
+            await self.engine.dispose()
 
     @asynccontextmanager
-    async def get_db_session(self) -> AsyncGenerator[None, None]:
-        """Get database session with automatic cleanup."""
+    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
+        """Get database session with automatic cleanup"""
         if not self.async_session_maker:
             raise RuntimeError("Database not initialized")
             
-        try:
-            yield None # Mock session
-        except Exception as e:
-            logger.error(f"Database session error: {str(e)}")
-            raise
-        finally:
-            pass # Mock session close
+        async with self.async_session_maker() as session:
+            try:
+                yield session
+            except Exception as e:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
 
     async def check_health(self) -> bool:
-        """Check database connectivity."""
-        try:
-            if not self.engine:
-                return False
-            return True
+        """Check database connectivity"""
+        if not self.async_session_maker:
+            return False
             
+        try:
+            async with self.get_session() as session:
+                await session.execute(text("SELECT 1"))
+            return True
         except Exception as e:
-            logger.error(f"Health check failed: {str(e)}")
+            logger.error(f"Database health check failed: {e}")
             return False
 
-db_manager = DatabaseManager()
+    def run_migrations(self, script_location: str = "alembic") -> None:
+        """Run database migrations using Alembic"""
+        try:
+            alembic_cfg = Config()
+            alembic_cfg.set_main_option("script_location", script_location)
+            alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL.replace("+asyncpg", ""))
+            command.upgrade(alembic_cfg, "head")
+        except Exception as e:
+            logger.error(f"Failed to run migrations: {e}")
+            raise
 
-@asynccontextmanager
-async def lifespan(app: object) -> AsyncGenerator[None, None]:
-    """Handle database lifecycle."""
-    await db_manager.init_db()
-    yield
-    await db_manager.close_db()
+
+# Global database instance
+db = DatabaseManager()
