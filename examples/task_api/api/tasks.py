@@ -3,19 +3,20 @@ from typing import List, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
-from sqlalchemy import Boolean, Column, DateTime, String, select
+from pydantic import BaseModel, Field
+from sqlalchemy import Boolean, Column, DateTime, String, select, func
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # Database configuration
 DATABASE_URL = "sqlite+aiosqlite:///./tasks.db"
+engine = create_async_engine(DATABASE_URL)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-# SQLAlchemy models
 class Base(DeclarativeBase):
     pass
 
-class TaskModel(Base):
+class TaskDB(Base):
     __tablename__ = "tasks"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -25,113 +26,86 @@ class TaskModel(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-# Pydantic models
-class TaskBase(BaseModel):
+class TaskCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    completed: bool = False
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "title": "Complete project",
+                "description": "Finish the API implementation"
+            }
+        }
+    }
 
-class TaskCreate(TaskBase):
-    pass
-
-class TaskUpdate(TaskBase):
+class TaskUpdate(BaseModel):
     title: Optional[str] = None
+    description: Optional[str] = None
     completed: Optional[bool] = None
 
-class Task(TaskBase):
+class TaskResponse(BaseModel):
     id: UUID
+    title: str
+    description: Optional[str] = None
+    completed: bool
     created_at: datetime
     updated_at: datetime
 
-    model_config = {
-        "from_attributes": True
-    }
-
-class TaskList(BaseModel):
-    tasks: List[Task]
+class TaskListResponse(BaseModel):
     total: int
-    page: int
-    per_page: int
+    items: List[TaskResponse]
 
-# Database setup
-engine = create_async_engine(DATABASE_URL)
-AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-async def get_db() -> AsyncSession:
+async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
 
-# Router
-router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-@router.post("/", response_model=Task, status_code=status.HTTP_201_CREATED)
-async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_db)) -> Task:
-    """Create a new task."""
-    db_task = TaskModel(**task.model_dump())
+@router.post("/", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+async def create_task(task: TaskCreate, db: AsyncSession = Depends(get_db)):
+    db_task = TaskDB(**task.model_dump())
     db.add(db_task)
     await db.commit()
     await db.refresh(db_task)
     return db_task
 
-@router.get("/", response_model=TaskList)
+@router.get("/", response_model=TaskListResponse)
 async def list_tasks(
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, gt=0),
     per_page: int = Query(10, gt=0, le=100),
     completed: Optional[bool] = None
-) -> TaskList:
-    """List tasks with pagination and optional completion filter."""
-    query = select(TaskModel)
-    
+):
+    query = select(TaskDB)
     if completed is not None:
-        query = query.filter(TaskModel.completed == completed)
+        query = query.filter(TaskDB.completed == completed)
     
-    # Get total count
-    result = await db.execute(select(TaskModel))
-    total = len(result.scalars().all())
+    total = await db.scalar(select(func.count()).select_from(query.subquery()))
     
-    # Apply pagination
-    query = query.offset((page - 1) * per_page).limit(per_page)
-    result = await db.execute(query)
-    tasks = result.scalars().all()
-    
-    return TaskList(
-        tasks=tasks,
-        total=total,
-        page=page,
-        per_page=per_page
+    tasks = await db.scalars(
+        query.offset((page - 1) * per_page).limit(per_page)
     )
+    
+    return TaskListResponse(total=total, items=list(tasks.all()))
 
-@router.get("/{task_id}", response_model=Task)
-async def get_task(task_id: UUID, db: AsyncSession = Depends(get_db)) -> Task:
-    """Get a specific task by ID."""
-    result = await db.execute(select(TaskModel).filter(TaskModel.id == str(task_id)))
-    task = result.scalar_one_or_none()
-    
+@router.get("/{task_id}", response_model=TaskResponse)
+async def get_task(task_id: UUID, db: AsyncSession = Depends(get_db)):
+    task = await db.get(TaskDB, str(task_id))
     if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
-        )
-    
+        raise HTTPException(status_code=404, detail="Task not found")
     return task
 
-@router.patch("/{task_id}", response_model=Task)
+@router.patch("/{task_id}", response_model=TaskResponse)
 async def update_task(
     task_id: UUID,
     task_update: TaskUpdate,
     db: AsyncSession = Depends(get_db)
-) -> Task:
-    """Update a task."""
-    result = await db.execute(select(TaskModel).filter(TaskModel.id == str(task_id)))
-    task = result.scalar_one_or_none()
-    
+):
+    task = await db.get(TaskDB, str(task_id))
     if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
-        )
-    
+        raise HTTPException(status_code=404, detail="Task not found")
+
     update_data = task_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(task, field, value)
@@ -141,16 +115,10 @@ async def update_task(
     return task
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
-    """Delete a task."""
-    result = await db.execute(select(TaskModel).filter(TaskModel.id == str(task_id)))
-    task = result.scalar_one_or_none()
-    
+async def delete_task(task_id: UUID, db: AsyncSession = Depends(get_db)):
+    task = await db.get(TaskDB, str(task_id))
     if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found"
-        )
+        raise HTTPException(status_code=404, detail="Task not found")
     
     await db.delete(task)
     await db.commit()

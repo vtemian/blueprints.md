@@ -1,169 +1,183 @@
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
+import secrets
+import logging
+from enum import Enum
 
-from fastapi import APIRouter, Depends, HTTPException, Body, status
+from fastapi import APIRouter, Depends, HTTPException, status, Security
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy.orm import Session, declarative_base
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel, EmailStr, Field, SecretStr
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
+from config import settings
+from database import get_db, Base
 from models.user import User
-from services.auth import AuthService
-from core.database import get_db
 
-auth_router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger(__name__)
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
+router = APIRouter(prefix="/auth", tags=["auth"])
 
-class UserRegistration(BaseModel):
+class TokenType(str, Enum):
+    ACCESS = "access"
+    REFRESH = "refresh"
+
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+    exp: Optional[datetime] = None
+
+class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: SecretStr
     full_name: str
-    phone: Optional[str] = None
-
+    
     model_config = {
         "json_schema_extra": {
             "example": {
                 "email": "user@example.com",
                 "password": "strongpassword123",
-                "full_name": "John Doe",
-                "phone": "+1234567890",
+                "full_name": "John Doe"
             }
         }
     }
 
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    full_name: str
+    is_active: bool
+    created_at: datetime
 
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-
-
-@auth_router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(user_data: UserRegistration, db: Session = Depends(get_db)):
-    """Register a new user"""
-    if AuthService.get_user_by_email(db, user_data.email):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
-        )
-
-    user = AuthService.create_user(db, user_data)
-    await AuthService.send_verification_email(user.email)
-
-    return {
-        "message": "Registration successful. Please check your email to verify your account."
+    model_config = {
+        "from_attributes": True
     }
 
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
 
-@auth_router.post("/login", response_model=TokenResponse)
-async def login(credentials: UserLogin, db: Session = Depends(get_db)):
-    """Authenticate user and return tokens"""
-    user = AuthService.authenticate_user(db, credentials.email, credentials.password)
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def create_token(data: Dict[str, Any], token_type: TokenType) -> str:
+    to_encode = data.copy()
+    
+    expire = datetime.utcnow() + timedelta(
+        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES if token_type == TokenType.ACCESS 
+        else settings.REFRESH_TOKEN_EXPIRE_MINUTES
+    )
+    
+    to_encode.update({"exp": expire, "type": token_type})
+    
+    return jwt.encode(
+        to_encode,
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM
+    )
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if not email:
+            raise credentials_exception
+            
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception
+        
+    user = db.query(User).filter(User.email == token_data.email).first()
     if not user:
+        raise credentials_exception
+        
+    return user
+
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(user_data: UserCreate, db: Session = Depends(get_db)) -> User:
+    try:
+        user = User(
+            email=user_data.email,
+            hashed_password=get_password_hash(user_data.password.get_secret_value()),
+            full_name=user_data.full_name
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+        
+    except IntegrityError:
+        db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
         )
 
-    tokens = AuthService.create_tokens(user.id)
-    return tokens
-
-
-@auth_router.post("/logout")
-async def logout(current_user: User = Depends(AuthService.get_current_user)):
-    """Logout current user"""
-    AuthService.blacklist_token(current_user.id)
-    return {"message": "Successfully logged out"}
-
-
-@auth_router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(refresh_token: str = Body(...), db: Session = Depends(get_db)):
-    """Get new access token using refresh token"""
-    new_tokens = AuthService.refresh_access_token(db, refresh_token)
-    if not new_tokens:
+@router.post("/login", response_model=Token)
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+) -> Dict[str, str]:
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-        )
-    return new_tokens
-
-
-@auth_router.get("/profile")
-async def get_profile(current_user: User = Depends(AuthService.get_current_user)):
-    """Get current user profile"""
-    return current_user
-
-
-@auth_router.put("/profile")
-async def update_profile(
-    profile_data: dict,
-    current_user: User = Depends(AuthService.get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Update user profile"""
-    updated_user = AuthService.update_user(db, current_user.id, profile_data)
-    return updated_user
-
-
-@auth_router.post("/change-password")
-async def change_password(
-    current_password: str = Body(...),
-    new_password: str = Body(...),
-    current_user: User = Depends(AuthService.get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Change user password"""
-    if not AuthService.verify_password(current_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    AuthService.update_password(db, current_user.id, new_password)
-    return {"message": "Password updated successfully"}
-
-
-@auth_router.post("/forgot-password")
-async def forgot_password(email: str = Body(...), db: Session = Depends(get_db)):
-    """Initiate password reset flow"""
-    user = AuthService.get_user_by_email(db, email)
-    if user:
-        reset_token = AuthService.create_password_reset_token(user.id)
-        await AuthService.send_password_reset_email(email, reset_token)
+    access_token = create_token(
+        data={"sub": user.email},
+        token_type=TokenType.ACCESS
+    )
+    refresh_token = create_token(
+        data={"sub": user.email},
+        token_type=TokenType.REFRESH
+    )
+    
     return {
-        "message": "If an account exists with this email, you will receive password reset instructions"
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
     }
 
-
-@auth_router.post("/reset-password")
-async def reset_password(
-    token: str = Body(...), new_password: str = Body(...), db: Session = Depends(get_db)
-):
-    """Reset password using reset token"""
-    user_id = AuthService.verify_password_reset_token(token)
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token",
-        )
-
-    AuthService.update_password(db, user_id, new_password)
-    return {"message": "Password has been reset successfully"}
-
-
-@auth_router.post("/verify-email")
-async def verify_email(token: str = Body(...), db: Session = Depends(get_db)):
-    """Verify user email address"""
-    user_id = AuthService.verify_email_token(token)
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification token",
-        )
-
-    AuthService.mark_email_verified(db, user_id)
-    return {"message": "Email verified successfully"}
+@router.post("/refresh", response_model=Token)
+async def refresh_token(
+    current_user: User = Depends(get_current_user)
+) -> Dict[str, str]:
+    access_token = create_token(
+        data={"sub": current_user.email},
+        token_type=TokenType.ACCESS
+    )
+    refresh_token = create_token(
+        data={"sub": current_user.email},
+        token_type=TokenType.REFRESH
+    )
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }

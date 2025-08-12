@@ -1,134 +1,107 @@
+import logging
+import os
 from contextlib import asynccontextmanager
-from typing import Annotated, List, Optional
-from datetime import datetime
+from typing import Annotated
 
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
-from pydantic import BaseModel, Field
+import stripe
 
-from models.user import User, UserCreate, UserUpdate
-from models.product import Product, ProductCreate, ProductUpdate  
-from models.cart import Cart, CartItem
-from models.order import Order, OrderCreate
-from models.payment import Payment, PaymentCreate
-from database import get_db, init_db
-from auth import get_current_user, create_access_token
-from config import Settings
+from config import config
+from db.base import Base, SessionLocal
+from celery_app import celery_app
+import routers.auth as auth
+import routers.users as users 
+import routers.products as products
+import routers.cart as cart
+import routers.orders as orders
+import security
 
-settings = Settings()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    yield
-
+# Initialize FastAPI app
 app = FastAPI(
     title="E-Commerce API",
-    description="API for e-commerce platform with user, product, cart and order management",
-    version="1.0.0",
-    lifespan=lifespan
+    description="E-commerce platform API with user management, products, cart and orders", 
+    version="1.0.0"
 )
 
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True, 
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-api_router = APIRouter()
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-@api_router.post("/users/", response_model=User, status_code=status.HTTP_201_CREATED)
-async def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = User.get_by_email(db, email=user.email)
-    if db_user:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager for app startup and shutdown events"""
+    # Startup
+    logger.info("Starting up application...")
+    
+    # Initialize database
+    engine = create_engine(config.SQLALCHEMY_DATABASE_URI)
+    SessionLocal.configure(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    
+    # Initialize Stripe
+    stripe.api_key = config.STRIPE_SECRET_KEY
+    
+    # Start Celery worker
+    celery_app.conf.update(broker_url=config.CELERY_BROKER_URL)
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application...")
+
+# Include routers
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(products.router, prefix="/api/v1/products", tags=["products"])
+app.include_router(cart.router, prefix="/api/v1/cart", tags=["cart"])
+app.include_router(orders.router, prefix="/api/v1/orders", tags=["orders"])
+
+# Dependency to get DB session
+async def get_db() -> Session:
+    """Get database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Dependency to get current user
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: Annotated[Session, Depends(get_db)]
+):
+    """Get current authenticated user"""
+    user = security.get_current_user(db, token)
+    if not user:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    return User.create(db, user)
+    return user
 
-@api_router.get("/users/me", response_model=User)
-async def read_users_me(
-    current_user: Annotated[User, Depends(get_current_user)]
-):
-    return current_user
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "E-Commerce API"}
 
-@api_router.get("/products/", response_model=List[Product])
-async def list_products(
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    return Product.get_multi(db, skip=skip, limit=limit)
-
-@api_router.post("/products/", response_model=Product)
-async def create_product(
-    product: ProductCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Session = Depends(get_db)
-):
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions"
-        )
-    return Product.create(db, product)
-
-@api_router.get("/cart/", response_model=Cart)
-async def get_cart(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Session = Depends(get_db)
-):
-    return Cart.get_by_user_id(db, user_id=current_user.id)
-
-@api_router.post("/cart/items/", response_model=CartItem)
-async def add_cart_item(
-    product_id: int,
-    quantity: int,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Session = Depends(get_db)
-):
-    cart = Cart.get_by_user_id(db, user_id=current_user.id)
-    return cart.add_item(db, product_id=product_id, quantity=quantity)
-
-@api_router.post("/orders/", response_model=Order)
-async def create_order(
-    order: OrderCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Session = Depends(get_db)
-):
-    return Order.create(db, order, current_user.id)
-
-@api_router.get("/orders/{order_id}", response_model=Order)
-async def get_order(
-    order_id: int,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Session = Depends(get_db)
-):
-    order = Order.get(db, id=order_id)
-    if not order or order.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found"
-        )
-    return order
-
-@api_router.post("/payments/", response_model=Payment)
-async def create_payment(
-    payment: PaymentCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Session = Depends(get_db)
-):
-    order = Order.get(db, id=payment.order_id)
-    if not order or order.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found"
-        )
-    return Payment.create(db, payment)
-
-app.include_router(api_router, prefix="/api/v1")
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}

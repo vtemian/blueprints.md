@@ -28,7 +28,7 @@ class DatabaseManager:
         try:
             self.engine = None # Mock engine creation
             self.async_session_maker = None # Mock session maker
-            logger.info("Database initialized successfully")
+            logger.info("Database connection established successfully")
             
         except Exception as e:
             logger.error(f"Database initialization failed: {str(e)}")
@@ -40,39 +40,36 @@ class DatabaseManager:
             # Mock engine disposal
             logger.info("Database connections closed")
 
-    async def get_session(self) -> AsyncGenerator[None, None]:
-        """Get database session."""
+    @asynccontextmanager
+    async def get_db_session(self) -> AsyncGenerator[None, None]:
+        """Get database session with automatic cleanup."""
         if not self.async_session_maker:
             raise RuntimeError("Database not initialized")
             
         try:
             yield None # Mock session
         except Exception as e:
+            logger.error(f"Database session error: {str(e)}")
             raise
         finally:
             pass # Mock session close
 
     async def check_health(self) -> bool:
         """Check database connectivity."""
-        if not self.async_session_maker:
-            return False
-            
         try:
-            return True # Mock health check
+            if not self.engine:
+                return False
+            return True
+            
         except Exception as e:
-            logger.error(f"Database health check failed: {str(e)}")
+            logger.error(f"Health check failed: {str(e)}")
             return False
 
 db_manager = DatabaseManager()
 
-@asynccontextmanager 
+@asynccontextmanager
 async def lifespan(app: object) -> AsyncGenerator[None, None]:
-    """Manage database lifecycle."""
+    """Handle database lifecycle."""
     await db_manager.init_db()
     yield
     await db_manager.close_db()
-
-async def get_db() -> AsyncGenerator[None, None]:
-    """Dependency for database session."""
-    async for session in db_manager.get_session():
-        yield session

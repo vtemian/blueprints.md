@@ -1,142 +1,59 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Body, Query, status
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from uuid import UUID, uuid4
 
-from models.order import Order, OrderStatus
-from models.order_item import OrderItem
-from models.user import User
-from models.cart import Cart
-from services.auth import get_current_user
-from services.order import OrderService
-from services.payment import PaymentService
-from jobs.tasks import process_order_async
-from core.database import get_db
+class Order:
+    def __init__(self, id: UUID, customer_id: UUID, status: str, total_amount: Decimal,
+                 notes: Optional[str] = None):
+        self.id = id or uuid4()
+        self.customer_id = customer_id
+        self.status = status
+        self.total_amount = total_amount
+        self.notes = notes
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
 
-orders_router = APIRouter(prefix="/orders", tags=["Orders"])
+class OrderCreate:
+    def __init__(self, customer_id: UUID, total_amount: Decimal, notes: Optional[str] = None):
+        self.customer_id = customer_id
+        self.total_amount = total_amount
+        self.notes = notes
 
+class OrderResponse:
+    def __init__(self, id: UUID, customer_id: UUID, status: str, total_amount: Decimal,
+                 notes: Optional[str], created_at: datetime, updated_at: datetime):
+        self.id = id
+        self.customer_id = customer_id
+        self.status = status
+        self.total_amount = total_amount
+        self.notes = notes
+        self.created_at = created_at
+        self.updated_at = updated_at
 
-class OrderCreate(BaseModel):
-    shipping_address: str
-    payment_method_id: str
-    order_notes: Optional[str] = None
+class OrderService:
+    def __init__(self):
+        self.orders: List[Order] = []
 
+    async def create_order(self, order: OrderCreate) -> Order:
+        """Create a new order"""
+        db_order = Order(
+            id=uuid4(),
+            customer_id=order.customer_id,
+            status="pending", 
+            total_amount=order.total_amount,
+            notes=order.notes
+        )
+        self.orders.append(db_order)
+        return db_order
 
-class OrderUpdate(BaseModel):
-    status: Optional[OrderStatus] = None
-    tracking_number: Optional[str] = None
-    internal_notes: Optional[str] = None
+    def get_order(self, order_id: UUID) -> Optional[Order]:
+        """Get order by ID"""
+        for order in self.orders:
+            if order.id == order_id:
+                return order
+        return None
 
-
-@orders_router.post("/checkout", status_code=status.HTTP_201_CREATED)
-async def checkout(
-    order_data: OrderCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Process order checkout"""
-    cart = db.query(Cart).filter(Cart.user_id == current_user.id).first()
-    if not cart or not cart.items:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-
-    payment = PaymentService().process_payment(order_data.payment_method_id)
-    if not payment.success:
-        raise HTTPException(status_code=400, detail=payment.error)
-
-    order = OrderService.create_order(
-        db=db,
-        user=current_user,
-        cart=cart,
-        shipping_address=order_data.shipping_address,
-        order_notes=order_data.order_notes,
-    )
-
-    process_order_async.delay(order.id)
-    return {"order_id": order.id}
-
-
-@orders_router.get("/history")
-def get_order_history(
-    page: int = 1,
-    per_page: int = 10,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> List[Order]:
-    """Get user's order history"""
-    return OrderService.get_user_orders(
-        db=db, user_id=current_user.id, page=page, per_page=per_page
-    )
-
-
-@orders_router.get("/{order_id}")
-def get_order(
-    order_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Order:
-    """Get order details"""
-    order = OrderService.get_order(db, order_id)
-    if order.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    return order
-
-
-@orders_router.post("/{order_id}/cancel")
-def cancel_order(
-    order_id: int,
-    reason: str = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Order:
-    """Cancel an order"""
-    order = OrderService.get_order(db, order_id)
-    if order.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    return OrderService.cancel_order(db, order, reason)
-
-
-@orders_router.get("/tracking/{tracking_number}")
-def track_order(
-    tracking_number: str,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Track order status"""
-    return OrderService.get_tracking_info(tracking_number)
-
-
-@orders_router.get("/admin/orders")
-def list_all_orders(
-    page: int = 1,
-    per_page: int = 50,
-    status: Optional[OrderStatus] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> List[Order]:
-    """Admin endpoint to list all orders"""
-    return OrderService.list_orders(db, page, per_page, status)
-
-
-@orders_router.put("/admin/orders/{order_id}")
-def update_order(
-    order_id: int,
-    order_update: OrderUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Order:
-    """Admin endpoint to update order"""
-    return OrderService.update_order(
-        db, order_id, order_update.dict(exclude_unset=True)
-    )
-
-
-@orders_router.post("/admin/orders/{order_id}/tracking")
-def add_tracking(
-    order_id: int,
-    tracking_number: str = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Order:
-    """Admin endpoint to add tracking number"""
-    return OrderService.add_tracking(db, order_id, tracking_number)
+    def list_orders(self, skip: int = 0, limit: int = 100) -> List[Order]:
+        """List orders with pagination"""
+        return self.orders[skip:skip + limit]

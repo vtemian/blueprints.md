@@ -1,137 +1,84 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
+from datetime import datetime
+from typing import List, Optional
+from uuid import UUID, uuid4
 
-from models.cart import Cart
-from models.product import Product
-from models.user import User
-from services.auth import get_current_user
-from core.database import get_db
+class CartItem:
+    def __init__(self, id: UUID, user_id: UUID, product_id: UUID, quantity: float):
+        self.id = id or uuid4()
+        self.user_id = user_id
+        self.product_id = product_id
+        self.quantity = quantity
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
 
-cart_router = APIRouter(prefix="/cart", tags=["Shopping Cart"])
+class CartItemCreate:
+    def __init__(self, product_id: UUID, quantity: float):
+        self.product_id = product_id
+        self.quantity = quantity
 
+class CartItemResponse:
+    def __init__(self, id: UUID, product_id: UUID, quantity: float,
+                 created_at: datetime, updated_at: datetime):
+        self.id = id
+        self.product_id = product_id
+        self.quantity = quantity
+        self.created_at = created_at
+        self.updated_at = updated_at
 
-class CartItemBase(BaseModel):
-    product_id: int
-    quantity: int = Field(default=1, gt=0)
+class CartRouter:
+    def __init__(self):
+        self.cart_items: List[CartItem] = []
 
-    model_config = {"json_schema_extra": {"example": {"product_id": 1, "quantity": 1}}}
+    async def add_to_cart(self, cart_item: CartItemCreate, user_id: UUID) -> CartItemResponse:
+        """Add item to user's cart"""
+        new_item = CartItem(
+            id=uuid4(),
+            user_id=user_id,
+            product_id=cart_item.product_id,
+            quantity=cart_item.quantity
+        )
+        self.cart_items.append(new_item)
+        return CartItemResponse(
+            id=new_item.id,
+            product_id=new_item.product_id,
+            quantity=new_item.quantity,
+            created_at=new_item.created_at,
+            updated_at=new_item.updated_at
+        )
 
+    async def get_cart(self, user_id: UUID) -> List[CartItemResponse]:
+        """Get user's cart items"""
+        return [
+            CartItemResponse(
+                id=item.id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                created_at=item.created_at,
+                updated_at=item.updated_at
+            )
+            for item in self.cart_items
+            if item.user_id == user_id
+        ]
 
-class CartItemResponse(CartItemBase):
-    id: int
-    total_price: float
+    async def remove_from_cart(self, item_id: UUID, user_id: UUID) -> None:
+        """Remove item from cart"""
+        self.cart_items = [
+            item for item in self.cart_items
+            if not (item.id == item_id and item.user_id == user_id)
+        ]
 
-    model_config = {"from_attributes": True}
-
-
-@cart_router.get("/", response_model=List[CartItemResponse])
-def get_cart(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-) -> List[CartItemResponse]:
-    """Get current user's cart items"""
-    return db.query(Cart).filter(Cart.user_id == current_user.id).all()
-
-
-@cart_router.post(
-    "/items", response_model=CartItemResponse, status_code=status.HTTP_201_CREATED
-)
-def add_to_cart(
-    item: CartItemBase,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> CartItemResponse:
-    """Add item to cart with inventory validation"""
-    product = db.query(Product).get(item.product_id)
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    if product.stock < item.quantity:
-        raise HTTPException(status_code=400, detail="Insufficient inventory")
-
-    cart_item = Cart(
-        user_id=current_user.id,
-        product_id=item.product_id,
-        quantity=item.quantity,
-        total_price=product.price * item.quantity,
-    )
-
-    try:
-        db.add(cart_item)
-        db.commit()
-        db.refresh(cart_item)
-        return cart_item
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Error adding item to cart")
-
-
-@cart_router.put("/items/{item_id}", response_model=CartItemResponse)
-def update_cart_item(
-    item_id: int,
-    item: CartItemBase,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> CartItemResponse:
-    """Update cart item quantity with validation"""
-    cart_item = (
-        db.query(Cart)
-        .filter(Cart.id == item_id, Cart.user_id == current_user.id)
-        .first()
-    )
-
-    if not cart_item:
-        raise HTTPException(status_code=404, detail="Cart item not found")
-
-    product = db.query(Product).get(cart_item.product_id)
-    if product.stock < item.quantity:
-        raise HTTPException(status_code=400, detail="Insufficient inventory")
-
-    try:
-        cart_item.quantity = item.quantity
-        cart_item.total_price = product.price * item.quantity
-        db.commit()
-        db.refresh(cart_item)
-        return cart_item
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Error updating cart item")
-
-
-@cart_router.delete("/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_from_cart(
-    item_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> None:
-    """Remove item from cart"""
-    cart_item = (
-        db.query(Cart)
-        .filter(Cart.id == item_id, Cart.user_id == current_user.id)
-        .first()
-    )
-
-    if not cart_item:
-        raise HTTPException(status_code=404, detail="Cart item not found")
-
-    try:
-        db.delete(cart_item)
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Error removing cart item")
-
-
-@cart_router.delete("/", status_code=status.HTTP_204_NO_CONTENT)
-def clear_cart(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-) -> None:
-    """Clear all items from cart"""
-    try:
-        db.query(Cart).filter(Cart.user_id == current_user.id).delete()
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Error clearing cart")
+    async def update_cart_item(self, item_id: UUID, cart_item: CartItemCreate,
+                             user_id: UUID) -> Optional[CartItemResponse]:
+        """Update cart item quantity"""
+        for item in self.cart_items:
+            if item.id == item_id and item.user_id == user_id:
+                item.quantity = cart_item.quantity
+                item.updated_at = datetime.utcnow()
+                return CartItemResponse(
+                    id=item.id,
+                    product_id=item.product_id,
+                    quantity=item.quantity,
+                    created_at=item.created_at,
+                    updated_at=item.updated_at
+                )
+        return None

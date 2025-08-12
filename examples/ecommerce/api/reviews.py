@@ -1,166 +1,78 @@
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Body, Query, status
-from sqlalchemy import func
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from uuid import UUID, uuid4
 
-from models.review import Review, ReviewStatus
-from models.product import Product
-from models.user import User
-from services.auth import get_current_user, get_current_admin
-from core.database import get_db
+class Review:
+    """Review model representing a product review"""
+    def __init__(self, id: UUID, user_id: UUID, product_id: UUID, 
+                 rating: int, comment: Optional[str] = None):
+        self.id = id or uuid4()
+        self.user_id = user_id
+        self.product_id = product_id
+        self.rating = rating
+        self.comment = comment
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
 
-reviews_router = APIRouter(prefix="/reviews", tags=["Reviews"])
+class ReviewCreate:
+    """Data model for creating a new review"""
+    def __init__(self, product_id: UUID, rating: int, comment: Optional[str] = None):
+        self.product_id = product_id
+        if not 1 <= rating <= 5:
+            raise ValueError("Rating must be between 1 and 5")
+        self.rating = rating
+        self.comment = comment
 
+class ReviewResponse:
+    """Response model for review data"""
+    def __init__(self, review: Review):
+        self.id = review.id
+        self.user_id = review.user_id
+        self.product_id = review.product_id
+        self.rating = review.rating
+        self.comment = review.comment
+        self.created_at = review.created_at
+        self.updated_at = review.updated_at
 
-class ReviewCreate(BaseModel):
-    title: Optional[str] = None
-    comment: Optional[str] = None
-    rating: Optional[int] = Field(None, ge=1, le=5)
+class ReviewRepository:
+    """Repository for managing review data"""
+    def __init__(self):
+        self.reviews: List[Review] = []
 
-
-class ReviewUpdate(BaseModel):
-    title: Optional[str] = None
-    comment: Optional[str] = None
-    moderation_notes: Optional[str] = None
-
-
-@reviews_router.post("/products/{product_id}/reviews")
-def create_review(
-    product_id: int,
-    review: ReviewCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    product = db.query(Product).get(product_id)
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    existing_review = (
-        db.query(Review)
-        .filter(Review.product_id == product_id, Review.user_id == current_user.id)
-        .first()
-    )
-
-    if existing_review:
-        raise HTTPException(status_code=400, detail="Review already exists")
-
-    verified_purchase = (
-        db.query(func.count())
-        .filter(
-            # Add purchase verification logic
+    def create(self, user_id: UUID, review_data: ReviewCreate) -> Review:
+        """Create a new review"""
+        if self.get_by_user_and_product(user_id, review_data.product_id):
+            raise ValueError("User has already reviewed this product")
+            
+        review = Review(
+            id=uuid4(),
+            user_id=user_id,
+            product_id=review_data.product_id,
+            rating=review_data.rating,
+            comment=review_data.comment
         )
-        .scalar()
-        > 0
-    )
+        self.reviews.append(review)
+        return review
 
-    new_review = Review(
-        user_id=current_user.id,
-        product_id=product_id,
-        title=review.title,
-        comment=review.comment,
-        rating=review.rating,
-        verified_purchase=verified_purchase,
-        status=ReviewStatus.pending,
-    )
+    def get(self, review_id: UUID) -> Optional[Review]:
+        """Get review by ID"""
+        return next((r for r in self.reviews if r.id == review_id), None)
 
-    db.add(new_review)
-    db.commit()
-    db.refresh(new_review)
-    return new_review
+    def get_by_product(self, product_id: UUID) -> List[Review]:
+        """Get all reviews for a product"""
+        return [r for r in self.reviews if r.product_id == product_id]
 
+    def get_by_user_and_product(self, user_id: UUID, product_id: UUID) -> Optional[Review]:
+        """Get review by user and product"""
+        return next((r for r in self.reviews 
+                    if r.user_id == user_id and r.product_id == product_id), None)
 
-@reviews_router.get("/products/{product_id}/reviews")
-def get_product_reviews(
-    product_id: int,
-    page: int = 1,
-    per_page: int = 10,
-    sort_by: str = "created_at",
-    db: Session = Depends(get_db),
-):
-    query = db.query(Review).filter(
-        Review.product_id == product_id, Review.status == ReviewStatus.approved
-    )
-
-    if sort_by == "rating":
-        query = query.order_by(Review.rating.desc())
-    elif sort_by == "helpful_votes":
-        query = query.order_by(Review.helpful_votes.desc())
-    else:
-        query = query.order_by(Review.created_at.desc())
-
-    total = query.count()
-    reviews = query.offset((page - 1) * per_page).limit(per_page).all()
-
-    return {
-        "reviews": reviews,
-        "total": total,
-        "page": page,
-        "pages": (total + per_page - 1) // per_page,
-    }
-
-
-@reviews_router.put("/reviews/{review_id}/vote")
-def vote_review(
-    review_id: int,
-    helpful: bool = Body(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    review = db.query(Review).get(review_id)
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
-
-    if helpful:
-        review.helpful_votes += 1
-    else:
-        review.unhelpful_votes += 1
-
-    db.commit()
-    return review
-
-
-@reviews_router.get("/admin/reviews/pending")
-def get_pending_reviews(
-    page: int = 1,
-    per_page: int = 20,
-    current_user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    query = db.query(Review).filter(Review.status == ReviewStatus.pending)
-    total = query.count()
-    reviews = query.offset((page - 1) * per_page).limit(per_page).all()
-
-    return {
-        "reviews": reviews,
-        "total": total,
-        "page": page,
-        "pages": (total + per_page - 1) // per_page,
-    }
-
-
-@reviews_router.put("/admin/reviews/{review_id}")
-def moderate_review(
-    review_id: int,
-    review_update: ReviewUpdate,
-    current_user: User = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    review = db.query(Review).get(review_id)
-    if not review:
-        raise HTTPException(status_code=404, detail="Review not found")
-
-    if review_update.title:
-        review.title = review_update.title
-    if review_update.comment:
-        review.comment = review_update.comment
-    if review_update.moderation_notes:
-        review.moderation_notes = review_update.moderation_notes
-
-    review.status = ReviewStatus.approved
-    review.moderated_at = datetime.utcnow()
-    review.moderator_id = current_user.id
-
-    db.commit()
-    return review
+    def delete(self, review_id: UUID, user_id: UUID) -> bool:
+        """Delete a review if it belongs to the user"""
+        review = self.get(review_id)
+        if not review:
+            return False
+        if review.user_id != user_id:
+            raise ValueError("Not authorized to delete this review")
+        self.reviews.remove(review)
+        return True
