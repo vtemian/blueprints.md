@@ -504,28 +504,20 @@ class AgenticDependencyResolver:
         logger = get_logger('agentic_resolver')
         logger.debug(f"[LOAD_DEP] Loading dependency {insight.target_module} from {from_blueprint.module_name}")
         
-        # Create a reference-like object for resolution
-        ref = BlueprintReference(module_path=insight.target_module)
+        # For semantic insights, use direct path resolution instead of the intelligent resolver
+        # to avoid the complex path resolution issues
+        blueprint_file = self._find_blueprint_file(insight.target_module)
         
-        # Use intelligent reference resolution
-        available_modules = self._get_available_modules()
-        resolved_path = self.reference_resolver.resolve_reference(ref, from_blueprint, available_modules)
-        
-        if resolved_path:
-            logger.debug(f"[LOAD_DEP] Resolved path: {resolved_path}")
-            blueprint_file = self._find_blueprint_file(resolved_path)
-            if blueprint_file and blueprint_file.exists():
-                logger.debug(f"[LOAD_DEP] Found blueprint file: {blueprint_file}")
-                try:
-                    blueprint = self.parser.parse_file(blueprint_file)
-                    logger.debug(f"[LOAD_DEP] Successfully parsed dependency: {blueprint.module_name}")
-                    return blueprint
-                except Exception as e:
-                    logger.warning(f"[LOAD_DEP] Failed to parse blueprint {blueprint_file}: {e}")
-            else:
-                logger.debug(f"[LOAD_DEP] Blueprint file not found: {blueprint_file}")
+        if blueprint_file and blueprint_file.exists():
+            logger.debug(f"[LOAD_DEP] Found blueprint file: {blueprint_file}")
+            try:
+                blueprint = self.parser.parse_file(blueprint_file)
+                logger.debug(f"[LOAD_DEP] Successfully parsed dependency: {blueprint.module_name}")
+                return blueprint
+            except Exception as e:
+                logger.warning(f"[LOAD_DEP] Failed to parse blueprint {blueprint_file}: {e}")
         else:
-            logger.warning(f"[LOAD_DEP] Failed to resolve path for: {insight.target_module}")
+            logger.debug(f"[LOAD_DEP] Blueprint file not found for: {insight.target_module}")
         
         return None
     
@@ -567,6 +559,11 @@ class AgenticDependencyResolver:
         if clean_path.startswith("./"):
             clean_path = clean_path[2:]  # Remove ./
             logger.debug(f"[FIND_FILE] Removed ./ prefix: {clean_path}")
+        
+        # Handle relative paths starting with ../
+        elif clean_path.startswith("../"):
+            clean_path = clean_path[3:]  # Remove ../
+            logger.debug(f"[FIND_FILE] Removed ../ prefix: {clean_path}")
         
         # Handle both dot-separated and slash-separated paths
         if "." in clean_path:

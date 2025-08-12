@@ -54,15 +54,28 @@ class CodeVerifier:
             )
 
     def verify_imports(self, code: str) -> VerificationResult:
-        """Check for missing imports"""
+        """Check for missing imports and relative import issues"""
+        logger = get_logger('verifier')
+        
+        # Check for relative import issues
+        relative_import_issues = self._check_relative_imports(code)
+        
+        # Check for missing imports
         missing = self._find_missing_imports(code)
         
+        issues = []
+        if relative_import_issues:
+            issues.extend(relative_import_issues)
         if missing:
+            issues.extend(missing)
+        
+        if issues:
+            logger.debug(f"Import issues found: {len(issues)} total")
             return VerificationResult(
                 success=False,
                 error_type="import",
-                error_message="Missing imports",
-                suggestions=missing
+                error_message="Import issues found",
+                suggestions=issues
             )
         
         return VerificationResult(success=True)
@@ -315,6 +328,31 @@ Be thorough and check all used functions, classes, and modules.
                 imported.add(module)
         
         return imported
+
+    def _check_relative_imports(self, code: str) -> List[str]:
+        """Check for problematic relative import patterns"""
+        logger = get_logger('verifier')
+        issues = []
+        
+        for line_num, line in enumerate(code.splitlines(), 1):
+            line = line.strip()
+            if line.startswith('from ..') and 'import' in line:
+                # This is a relative import that might cause issues when running as main module
+                logger.debug(f"Found relative import on line {line_num}: {line}")
+                
+                # Extract the import path and suggest absolute import
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == 'from' and parts[2] == 'import':
+                    relative_path = parts[1]
+                    imports = ' '.join(parts[3:])
+                    
+                    # Convert ..module to absolute import
+                    absolute_path = relative_path.replace('..', '').lstrip('.')
+                    suggested = f"from {absolute_path} import {imports}"
+                    
+                    issues.append(f"Line {line_num}: Replace '{line}' with '{suggested}' for better module compatibility")
+        
+        return issues
 
     def _is_function_imported(self, function: str, code: str) -> bool:
         """Check if a function is imported through any import statement"""
