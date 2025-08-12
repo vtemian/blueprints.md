@@ -81,6 +81,10 @@ class CodeGenerator:
             blueprint, language, context_parts, dependency_versions
         )
         return self._call_claude_api(prompt)
+    
+    def _make_api_call(self, prompt: str) -> str:
+        """Make API call to Claude (alias for _call_claude_api for batch processing)."""
+        return self._call_claude_api(prompt)
 
     def generate_with_verification(
         self,

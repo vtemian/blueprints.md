@@ -347,6 +347,10 @@ class AgenticDependencyResolver:
         self.generation_planner = OptimalGenerationPlanner(self.client)
         logger.debug("Generation planner created")
         
+        # Add performance optimizations
+        self._semantic_cache = {}  # Cache semantic analysis results
+        self._fast_mode = True  # Skip semantic analysis when explicit refs exist
+        
         logger.debug("AgenticDependencyResolver initialization complete")
         # Pure Claude system - no fallbacks
     
@@ -449,9 +453,23 @@ class AgenticDependencyResolver:
             else:
                 logger.warning(f"[RECURSIVE] Failed to load referenced blueprint: {ref.module_path}")
         
-        # Then, get semantic insights about additional dependencies
-        logger.debug(f"[RECURSIVE] Performing semantic analysis for {blueprint.module_name}...")
-        insights = self.semantic_analyzer.analyze_dependencies(blueprint, project_context)
+        # Skip semantic analysis in fast mode when explicit references exist
+        if self._fast_mode and len(blueprint.blueprint_refs) > 0:
+            logger.debug(f"[RECURSIVE] Fast mode: skipping semantic analysis for {blueprint.module_name} (has {len(blueprint.blueprint_refs)} explicit refs)")
+            insights = []
+        else:
+            # Get semantic insights about additional dependencies (with caching)
+            logger.debug(f"[RECURSIVE] Performing semantic analysis for {blueprint.module_name}...")
+            cache_key = f"{blueprint.module_name}_{hash(blueprint.raw_content)}"
+            
+            if cache_key in self._semantic_cache:
+                logger.debug(f"[RECURSIVE] Using cached semantic analysis for {blueprint.module_name}")
+                insights = self._semantic_cache[cache_key]
+            else:
+                logger.debug(f"[RECURSIVE] Running semantic analysis for {blueprint.module_name}")
+                insights = self.semantic_analyzer.analyze_dependencies(blueprint, project_context)
+                self._semantic_cache[cache_key] = insights
+            
         all_dependencies[blueprint.module_name] = insights
         logger.debug(f"[RECURSIVE] Semantic analysis found {len(insights)} dependency insights")
         

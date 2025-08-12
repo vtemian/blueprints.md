@@ -449,30 +449,9 @@ class AdaptivePromptBuilder:
         logger.debug(f"Building prompt for {blueprint.module_name} ({language})")
         logger.debug(f"Context parts: {len(context_parts)}, Dependencies: {len(dependency_versions) if dependency_versions else 0}")
         
-        # Use strategy enhancement with recursion protection
-        self._recursion_depth += 1
-        
-        if self._recursion_depth > self._max_recursion_depth:
-            logger.warning(f"Max recursion depth ({self._max_recursion_depth}) reached, using base generation")
-            self._recursion_depth -= 1
-        else:
-            if not self.strategy_enabled:
-                logger.debug("Initializing strategy enhancement...")
-                self._init_strategy_enhancement()
-            
-            if self.strategy_enabled and self.strategy_enhanced:
-                logger.debug(f"Using strategy-enhanced prompt generation (depth: {self._recursion_depth})...")
-                try:
-                    result = self.strategy_enhanced.build_single_blueprint_prompt(
-                        blueprint, language, context_parts, dependency_versions
-                    )
-                    logger.debug(f"Strategy-enhanced prompt generated ({len(result)} chars)")
-                    self._recursion_depth -= 1
-                    return result
-                except Exception as e:
-                    logger.warning(f"Strategy enhancement failed: {e}, falling back to base generation")
-            
-            self._recursion_depth -= 1
+        # Skip strategy enhancement for better performance
+        # TODO: Re-enable with performance optimizations in future versions
+        logger.debug("Strategy enhancement disabled for performance - using base generation")
         
         # Base adaptive generation
         logger.debug("Using base adaptive generation...")
@@ -494,30 +473,9 @@ class AdaptivePromptBuilder:
         logger.debug(f"Building natural prompt for {blueprint.module_name} ({language})")
         logger.debug(f"Context parts: {len(context_parts)}, Dependencies: {len(dependency_versions) if dependency_versions else 0}")
         
-        # Use strategy enhancement with recursion protection
-        self._recursion_depth += 1
-        
-        if self._recursion_depth > self._max_recursion_depth:
-            logger.warning(f"Max recursion depth ({self._max_recursion_depth}) reached, using base generation")
-            self._recursion_depth -= 1
-        else:
-            if not self.strategy_enabled:
-                logger.debug("Initializing strategy enhancement...")
-                self._init_strategy_enhancement()
-                
-            if self.strategy_enabled and self.strategy_enhanced:
-                logger.debug(f"Using strategy-enhanced natural prompt generation (depth: {self._recursion_depth})...")
-                try:
-                    result = self.strategy_enhanced.build_natural_blueprint_prompt(
-                        blueprint, language, context_parts, dependency_versions
-                    )
-                    logger.debug(f"Strategy-enhanced natural prompt generated ({len(result)} chars)")
-                    self._recursion_depth -= 1
-                    return result
-                except Exception as e:
-                    logger.warning(f"Strategy enhancement failed: {e}, falling back to base generation")
-            
-            self._recursion_depth -= 1
+        # Skip strategy enhancement for better performance  
+        # TODO: Re-enable with performance optimizations in future versions
+        logger.debug("Strategy enhancement disabled for performance - using base generation")
         
         # Base adaptive generation
         logger.debug("Using base adaptive natural generation...")
