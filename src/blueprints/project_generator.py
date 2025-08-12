@@ -143,7 +143,12 @@ class ProjectGenerator:
                 )
                 future_to_blueprint[future] = blueprint
             
-            # Collect results as they complete
+            # Collect results as they complete and submit verification tasks
+            verification_futures = {}
+            # Use a separate smaller thread pool for verification to avoid resource contention
+            verification_max_workers = min(2, max_workers) if verify else 0
+            verification_executor = ThreadPoolExecutor(max_workers=verification_max_workers) if verify else None
+            
             completed_count = 0
             for future in as_completed(future_to_blueprint):
                 blueprint = future_to_blueprint[future]
@@ -154,11 +159,68 @@ class ProjectGenerator:
                     generated_files[blueprint.module_name] = output_path
                     generated_context[blueprint.module_name] = code
                     logger.info(f"✓ [{completed_count}/{len(resolved.generation_order)}] Generated {blueprint.module_name} -> {output_path}")
+                    
+                    # Submit verification task concurrently (if verification enabled)
+                    if verify and verification_executor:
+                        verify_future = verification_executor.submit(
+                            self._verify_generated_code_concurrent,
+                            code, blueprint, output_path
+                        )
+                        verification_futures[verify_future] = blueprint
+                    
                 except Exception as e:
                     logger.error(f"✗ Failed to generate {blueprint.module_name}: {str(e)}")
                     # For concurrent processing, we'll continue with other files
-                    # rather than failing the entire batch
                     logger.warning(f"Continuing with remaining files...")
+        
+        # Wait for all verification tasks to complete and aggregate results
+        if verify and verification_executor and verification_futures:
+            logger.info(f"Running concurrent verification for {len(verification_futures)} files...")
+            verification_completed = 0
+            verification_summary = {
+                'passed': 0,
+                'failed': 0,
+                'errors': 0,
+                'total_issues': 0,
+                'detailed_results': [],
+                'common_issues': {}
+            }
+            
+            for verify_future in as_completed(verification_futures):
+                blueprint = verification_futures[verify_future]
+                verification_completed += 1
+                try:
+                    result = verify_future.result()  # Get structured verification result
+                    verification_summary['detailed_results'].append(result)
+                    
+                    if result['success']:
+                        verification_summary['passed'] += 1
+                        logger.debug(f"[{verification_completed}/{len(verification_futures)}] ✓ Verified {blueprint.module_name}")
+                    else:
+                        verification_summary['failed'] += 1
+                        verification_summary['total_issues'] += len(result['issues'])
+                        
+                        # Track common issue types
+                        for issue in result['issues']:
+                            issue_type = issue['type']
+                            verification_summary['common_issues'][issue_type] = verification_summary['common_issues'].get(issue_type, 0) + 1
+                        
+                        logger.debug(f"[{verification_completed}/{len(verification_futures)}] ⚠ Verified {blueprint.module_name} ({len(result['issues'])} issues)")
+                        
+                except Exception as e:
+                    verification_summary['errors'] += 1
+                    verification_summary['detailed_results'].append({
+                        'module_name': blueprint.module_name,
+                        'success': False,
+                        'error': str(e)
+                    })
+                    logger.warning(f"[{verification_completed}/{len(verification_futures)}] ✗ Verification failed for {blueprint.module_name}: {e}")
+            
+            verification_executor.shutdown(wait=True)
+            
+            # Log comprehensive verification summary
+            self._log_verification_summary(verification_summary)
+            logger.info("Concurrent verification completed")
         
         logger.info(f"Concurrent generation completed: {len(generated_files)}/{len(resolved.generation_order)} files")
         return generated_files
@@ -267,6 +329,97 @@ class ProjectGenerator:
             # Write the file
             output_path.write_text(code, encoding='utf-8')
             return output_path
+    
+    def _verify_generated_code_concurrent(
+        self, 
+        code: str, 
+        blueprint: Blueprint, 
+        output_path: Path
+    ) -> dict:
+        """Thread-safe code verification for concurrent processing."""
+        logger = get_logger('project')
+        
+        verification_result = {
+            'module_name': blueprint.module_name,
+            'success': False,
+            'issues': [],
+            'error': None
+        }
+        
+        try:
+            # Import verifier here to avoid circular imports
+            from .verifier import CodeVerifier
+            
+            # Create verifier instance
+            verifier = CodeVerifier()
+            
+            # Run verification checks
+            verification_results = verifier.verify_all(code, blueprint)
+            
+            # Process verification results
+            failed_verifications = [r for r in verification_results if not r.success]
+            if failed_verifications:
+                verification_result['success'] = False
+                for result in failed_verifications[:3]:  # Limit issues
+                    issue_info = {
+                        'type': result.error_type,
+                        'message': result.error_message,
+                        'suggestions': result.suggestions[:2] if result.suggestions else []
+                    }
+                    verification_result['issues'].append(issue_info)
+                    
+                logger.debug(f"Verification found {len(failed_verifications)} issues for {blueprint.module_name}")
+            else:
+                verification_result['success'] = True
+                logger.debug(f"Verification passed for {blueprint.module_name}")
+                
+            return verification_result
+                
+        except Exception as e:
+            # Don't fail the entire generation if verification has issues
+            verification_result['error'] = str(e)
+            logger.warning(f"Verification failed for {blueprint.module_name}: {e}")
+            raise  # Re-raise so calling code can handle it
+    
+    def _log_verification_summary(self, verification_summary: dict) -> None:
+        """Log comprehensive verification summary with insights."""
+        logger = get_logger('project')
+        
+        total_verified = verification_summary['passed'] + verification_summary['failed'] + verification_summary['errors']
+        
+        # Main summary
+        if verification_summary['passed'] == total_verified:
+            logger.info(f"🎉 All {verification_summary['passed']} files passed verification!")
+        else:
+            logger.info(f"Verification Summary: {verification_summary['passed']}/{total_verified} files passed")
+            
+            if verification_summary['failed'] > 0:
+                logger.warning(f"  ⚠ {verification_summary['failed']} files with issues ({verification_summary['total_issues']} total issues)")
+                
+            if verification_summary['errors'] > 0:
+                logger.warning(f"  ✗ {verification_summary['errors']} files had verification errors")
+        
+        # Show common issue patterns
+        if verification_summary['common_issues']:
+            logger.info("Most common verification issues:")
+            sorted_issues = sorted(verification_summary['common_issues'].items(), key=lambda x: x[1], reverse=True)
+            for issue_type, count in sorted_issues[:3]:
+                logger.info(f"  - {issue_type}: {count} occurrences")
+        
+        # Show detailed issues for files that failed (limited output)
+        failed_files = [r for r in verification_summary['detailed_results'] if not r.get('success', True)]
+        if failed_files and len(failed_files) <= 3:
+            logger.info("Detailed issues:")
+            for result in failed_files:
+                logger.warning(f"  {result['module_name']}:")
+                if result.get('error'):
+                    logger.warning(f"    - Error: {result['error']}")
+                else:
+                    for issue in result.get('issues', [])[:2]:
+                        logger.warning(f"    - {issue['type']}: {issue['message']}")
+                        if issue.get('suggestions'):
+                            for suggestion in issue['suggestions'][:1]:
+                                logger.info(f"      Suggestion: {suggestion}")
     
     def generate_single_with_context(
         self,

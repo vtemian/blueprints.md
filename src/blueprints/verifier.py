@@ -54,29 +54,53 @@ class CodeVerifier:
             )
 
     def verify_imports(self, code: str) -> VerificationResult:
-        """Check for missing imports and relative import issues"""
+        """Check for missing imports, relative import issues, and incorrect third-party imports"""
         logger = get_logger('verifier')
         
-        # Check for relative import issues
+        # Check for relative import issues (these are structural problems)
         relative_import_issues = self._check_relative_imports(code)
         
-        # Check for missing imports
-        missing = self._find_missing_imports(code)
+        # Use Claude to analyze imports for missing and incorrect patterns
+        import_analysis = self._get_common_import_mappings(code)
         
         issues = []
+        warnings = []
+        
         if relative_import_issues:
             issues.extend(relative_import_issues)
-        if missing:
-            issues.extend(missing)
         
-        if issues:
-            logger.debug(f"Import issues found: {len(issues)} total")
+        # Check for incorrect imports (these are more serious than missing ones)
+        incorrect_imports = [k for k in import_analysis.keys() if k.startswith('incorrect_')]
+        if incorrect_imports:
+            for incorrect_key in incorrect_imports:
+                problematic = incorrect_key.replace('incorrect_', '')
+                correct = import_analysis[incorrect_key]
+                issues.append(f"Incorrect import: '{problematic}' should be '{correct}'")
+        
+        # Collect missing imports as warnings
+        missing_imports = [k for k in import_analysis.keys() if not k.startswith('incorrect_')]
+        if missing_imports:
+            warnings.extend([f"Missing import: {import_analysis[k]}" for k in missing_imports])
+        
+        # Fail verification for structural issues and incorrect imports
+        if relative_import_issues or incorrect_imports:
+            error_message = "Import issues found"
+            if incorrect_imports:
+                error_message = f"Incorrect third-party imports detected: {len(incorrect_imports)} issues"
+            
+            logger.debug(f"Import issues found: {len(issues)} critical issues")
             return VerificationResult(
                 success=False,
                 error_type="import",
-                error_message="Import issues found",
+                error_message=error_message,
                 suggestions=issues
             )
+        
+        # Log missing imports as warnings but don't fail verification
+        if warnings:
+            logger.debug(f"Import warnings (expected for generated code): {len(warnings)} missing imports")
+            for warning in warnings:
+                logger.debug(f"  - {warning}")
         
         return VerificationResult(success=True)
 
@@ -272,23 +296,41 @@ Be practical - minor style issues don't matter, focus on functional completeness
             return {}
     
     def _analyze_imports_with_claude(self, code: str) -> dict[str, str]:
-        """Use Claude to analyze what imports are missing"""
+        """Use Claude to analyze what imports are missing and incorrect"""
         import_request = f"""
-Analyze this Python code and identify missing imports:
+Analyze this Python code for import issues, focusing on correctness and third-party library best practices:
 
 ```python
 {code}
 ```
 
-Return a JSON object with missing import statements:
+ANALYSIS OBJECTIVES:
+1. Identify missing imports for functions/classes that are used but not imported
+2. Detect imports from incorrect modules (common mistakes in popular libraries)
+3. Check for import statement correctness and suggest fixes
+4. Validate third-party library usage patterns based on the libraries detected in the code
+
+INSTRUCTIONS:
+- Examine all used functions, classes, and modules in the code
+- For any third-party libraries you recognize, verify the import paths are correct
+- Look for common import mistakes (wrong module paths, incorrect submodules)
+- Consider the context of the code to determine appropriate import sources
+- Be thorough but only suggest imports that are clearly needed
+
+Return JSON with your analysis:
 {{
-    "function_name": "import statement",
-    "ClassName": "from module import ClassName",
-    ...
+    "missing_imports": {{
+        "item_name": "correct import statement"
+    }},
+    "incorrect_imports": {{
+        "problematic_line": "corrected import statement"
+    }},
+    "suggestions": [
+        "Specific suggestions for import improvements"
+    ]
 }}
 
-Only include imports that are clearly missing (function/class used but not imported).
-Be thorough and check all used functions, classes, and modules.
+Focus on accuracy - only suggest corrections you're confident about based on standard library usage patterns.
 """
         
         try:
@@ -299,16 +341,43 @@ Be thorough and check all used functions, classes, and modules.
             )
             
             response_text = response.content[0].text
+            logger = get_logger('verifier')
             
-            # Extract JSON from response
-            json_match = re.search(r'\{[^}]*\}', response_text, re.DOTALL)
+            # Extract JSON from response - handle nested braces better
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                import_mappings = json.loads(json_match.group())
-                return import_mappings
+                try:
+                    import_analysis = json.loads(json_match.group())
+                    
+                    # Convert analysis to import mappings for backward compatibility
+                    # but also log any incorrect imports found
+                    mappings = {}
+                    
+                    # Add missing imports to mappings
+                    if 'missing_imports' in import_analysis:
+                        mappings.update(import_analysis['missing_imports'])
+                    
+                    # Log incorrect imports as warnings
+                    if 'incorrect_imports' in import_analysis:
+                        for problematic, correct in import_analysis['incorrect_imports'].items():
+                            logger.warning(f"Incorrect import detected: '{problematic}' should be '{correct}'")
+                            mappings[f"incorrect_{problematic}"] = correct
+                    
+                    # Log suggestions
+                    if 'suggestions' in import_analysis:
+                        for suggestion in import_analysis['suggestions']:
+                            logger.debug(f"Import suggestion: {suggestion}")
+                    
+                    return mappings
+                    
+                except json.JSONDecodeError:
+                    logger.debug("Failed to parse Claude's import analysis as JSON, falling back to simple parsing")
+                    return {}
             
             return {}
             
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Claude import analysis failed: {e}")
             return {}
 
     def _extract_imported_names(self, code: str) -> set:

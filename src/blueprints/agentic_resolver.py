@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import List, Optional, Set, Dict, Tuple
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from anthropic import Anthropic
 
@@ -351,6 +353,11 @@ class AgenticDependencyResolver:
         self._semantic_cache = {}  # Cache semantic analysis results
         self._fast_mode = True  # Skip semantic analysis when explicit refs exist
         
+        # Threading infrastructure for concurrent parsing
+        self._parsing_lock = threading.Lock()
+        self._cache_lock = threading.Lock()
+        self._visited_lock = threading.Lock()
+        
         logger.debug("AgenticDependencyResolver initialization complete")
         # Pure Claude system - no fallbacks
     
@@ -384,9 +391,17 @@ class AgenticDependencyResolver:
         all_dependencies = {}
         visited = set()
         
-        self._discover_dependencies_recursive(
-            main_blueprint, all_blueprints, all_dependencies, visited, project_context
-        )
+        # Use concurrent parsing if we have multiple potential dependencies
+        if len(main_blueprint.blueprint_refs) > 2:
+            logger.info("Using concurrent dependency discovery for better performance")
+            self._discover_dependencies_concurrent(
+                main_blueprint, all_blueprints, all_dependencies, visited, project_context
+            )
+        else:
+            logger.info("Using sequential dependency discovery")
+            self._discover_dependencies_recursive(
+                main_blueprint, all_blueprints, all_dependencies, visited, project_context
+            )
         
         logger.info(f"Dependency discovery completed! Found {len(all_blueprints)} total blueprints:")
         for name in all_blueprints.keys():
@@ -496,6 +511,126 @@ class AgenticDependencyResolver:
                 logger.debug(f"[RECURSIVE] Failed to load semantic dependency: {insight.target_module}")
         
         logger.debug(f"[RECURSIVE] Completed processing {blueprint.module_name}. Total blueprints: {len(all_blueprints)}")
+    
+    def _discover_dependencies_concurrent(self, blueprint: Blueprint, all_blueprints: Dict[str, Blueprint], 
+                                        all_dependencies: Dict[str, List[DependencyInsight]], 
+                                        visited: Set[str], project_context: str):
+        """Concurrently discover dependencies for improved performance."""
+        logger = get_logger('agentic_resolver')
+        logger.info(f"Starting concurrent dependency discovery for {blueprint.module_name}")
+        
+        # Process the main blueprint first
+        with self._visited_lock:
+            visited.add(blueprint.module_name)
+            all_blueprints[blueprint.module_name] = blueprint
+        
+        # Collect all references to process concurrently
+        refs_to_process = list(blueprint.blueprint_refs)
+        logger.debug(f"Processing {len(refs_to_process)} blueprint references concurrently")
+        
+        # Use ThreadPoolExecutor for concurrent blueprint loading
+        max_workers = min(3, len(refs_to_process)) if refs_to_process else 1
+        processed_blueprints = []
+        
+        if refs_to_process:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all blueprint loading tasks
+                future_to_ref = {}
+                for ref in refs_to_process:
+                    future = executor.submit(self._load_blueprint_reference_thread_safe, ref, blueprint)
+                    future_to_ref[future] = ref
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_ref):
+                    ref = future_to_ref[future]
+                    try:
+                        dep_blueprint = future.result()
+                        if dep_blueprint:
+                            with self._visited_lock:
+                                if dep_blueprint.module_name not in visited:
+                                    processed_blueprints.append(dep_blueprint)
+                                    visited.add(dep_blueprint.module_name)
+                                    all_blueprints[dep_blueprint.module_name] = dep_blueprint
+                                    logger.debug(f"✓ Concurrently loaded {dep_blueprint.module_name}")
+                                else:
+                                    logger.debug(f"⚠ Blueprint {dep_blueprint.module_name} already processed")
+                        else:
+                            logger.warning(f"✗ Failed to load blueprint for reference: {ref.module_path}")
+                    except Exception as e:
+                        logger.warning(f"✗ Error loading blueprint for {ref.module_path}: {e}")
+        
+        # Recursively process discovered blueprints (this part remains sequential for dependency order)
+        for dep_blueprint in processed_blueprints:
+            logger.debug(f"Recursively processing discovered blueprint: {dep_blueprint.module_name}")
+            self._discover_dependencies_recursive(
+                dep_blueprint, all_blueprints, all_dependencies, visited, project_context
+            )
+        
+        # Handle semantic analysis for the main blueprint if needed
+        if not self._fast_mode or len(blueprint.blueprint_refs) == 0:
+            logger.debug(f"Performing semantic analysis for {blueprint.module_name}...")
+            try:
+                insights = self._get_semantic_insights_cached(blueprint, project_context)
+                if insights:
+                    all_dependencies[blueprint.module_name] = insights
+                    # Process semantic dependencies
+                    for insight in insights:
+                        if insight.confidence > 0.6 and not insight.missing:
+                            dep_blueprint = self._load_semantic_dependency(insight, blueprint)
+                            if dep_blueprint:
+                                with self._visited_lock:
+                                    if dep_blueprint.module_name not in visited:
+                                        logger.debug(f"Processing semantic dependency: {dep_blueprint.module_name}")
+                                        self._discover_dependencies_recursive(
+                                            dep_blueprint, all_blueprints, all_dependencies, visited, project_context
+                                        )
+            except Exception as e:
+                logger.warning(f"Semantic analysis failed for {blueprint.module_name}: {e}")
+        
+        logger.info(f"Completed concurrent discovery for {blueprint.module_name}. Total: {len(all_blueprints)} blueprints")
+    
+    def _load_blueprint_reference_thread_safe(self, ref: BlueprintReference, from_blueprint: Blueprint) -> Optional[Blueprint]:
+        """Thread-safe version of blueprint reference loading."""
+        logger = get_logger('agentic_resolver')
+        logger.debug(f"[THREAD] Loading reference {ref.module_path} from {from_blueprint.module_name}")
+        
+        try:
+            # Blueprint file discovery is thread-safe
+            blueprint_file = self._find_blueprint_file(ref.module_path)
+            if blueprint_file and blueprint_file.exists():
+                logger.debug(f"[THREAD] Found blueprint file: {blueprint_file}")
+                
+                # Parser operations are thread-safe
+                with self._parsing_lock:
+                    blueprint = self.parser.parse_file(blueprint_file)
+                    logger.debug(f"[THREAD] Parsed blueprint: {blueprint.module_name}")
+                    return blueprint
+            else:
+                logger.debug(f"[THREAD] Blueprint file not found for: {ref.module_path}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"[THREAD] Error loading blueprint reference {ref.module_path}: {e}")
+            return None
+    
+    def _get_semantic_insights_cached(self, blueprint: Blueprint, project_context: str) -> List[DependencyInsight]:
+        """Thread-safe cached semantic insights retrieval."""
+        cache_key = f"{blueprint.module_name}_{hash(blueprint.raw_content)}"
+        
+        with self._cache_lock:
+            if cache_key in self._semantic_cache:
+                logger = get_logger('agentic_resolver')
+                logger.debug(f"Using cached semantic insights for {blueprint.module_name}")
+                return self._semantic_cache[cache_key]
+        
+        # Generate new insights (this can be done outside the lock)
+        insights = self.semantic_analyzer.analyze_dependencies(blueprint, project_context)
+        
+        # Cache the results
+        with self._cache_lock:
+            self._semantic_cache[cache_key] = insights
+            
+        return insights
     
     def _load_blueprint_reference(self, ref: BlueprintReference, from_blueprint: Blueprint) -> Optional[Blueprint]:
         """Load a blueprint directly from a blueprint reference."""
