@@ -65,7 +65,7 @@ Features:
 
 ```bash
 # Run this command 🚀
-uvx --from blueprints-md blueprints generate api/tasks.md
+uvx blueprints-md generate api/tasks.md
 
 # Or if installed globally
 pip install blueprints-md
@@ -191,13 +191,13 @@ blueprints generate-from-requirements requirements.txt
 ### **3. Cross-Language Generation**
 ```bash
 # Python blueprint (using uvx for one-off execution)
-uvx --from blueprints-md blueprints generate api/users.md --language python
+uvx blueprints-md generate api/users.md --language python
 
 # Same blueprint → TypeScript
-uvx --from blueprints-md blueprints generate api/users.md --language typescript
+uvx blueprints-md generate api/users.md --language typescript
 
 # Same blueprint → Go
-uvx --from blueprints-md blueprints generate api/users.md --language go
+uvx blueprints-md generate api/users.md --language go
 ```
 
 ### **4. Design Pattern Implementation**
@@ -262,7 +262,7 @@ Claude understands payment processing requirements and generates secure, product
 
 ```bash
 # Option 1: Use without installation (recommended for trying out)
-uvx --from blueprints-md blueprints --help
+uvx blueprints-md --help
 
 # Option 2: Install as a tool with uv (recommended for regular use)
 uv tool install blueprints-md
@@ -283,7 +283,7 @@ cd blueprints.md && uv sync
 export ANTHROPIC_API_KEY="your-key"
 
 # 2. Generate code from a blueprint (no installation needed!)
-uvx --from blueprints-md blueprints generate api/tasks.md
+uvx blueprints-md generate api/tasks.md
 
 # 3. Create your first blueprint
 mkdir my-app && cd my-app
@@ -314,7 +314,7 @@ Security:
 EOF
 
 # 4. Generate your application
-uvx --from blueprints-md blueprints generate-project .
+uvx blueprints-md generate-project .
 
 # 5. Run it!
 make run  # Full app running at http://localhost:8000
@@ -324,7 +324,7 @@ make run  # Full app running at http://localhost:8000
 
 ```bash
 # Generate a complete e-commerce backend (no installation needed!)
-uvx --from blueprints-md blueprints generate-project examples/ecommerce/
+uvx blueprints-md generate-project examples/ecommerce/
 
 # Or if you have it installed
 blueprints generate-project examples/ecommerce/
